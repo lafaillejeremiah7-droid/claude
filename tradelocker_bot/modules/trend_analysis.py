@@ -42,10 +42,11 @@ class TrendState:
     price_4h: float
     price_30m: float
     confidence: float  # 0-1 score of trend strength
+    partial_alignment: bool = False  # True when 4H has direction but 30M is neutral
 
     @property
     def is_tradeable(self) -> bool:
-        """Only trade when both timeframes agree."""
+        """Trade when both agree OR partial alignment (4H directed, 30M neutral)."""
         return self.combined != TrendDirection.NEUTRAL
 
     @property
@@ -246,6 +247,12 @@ def get_trend_state(df_4h: pd.DataFrame, df_30m: pd.DataFrame) -> TrendState:
     Combines 4H and 30M analysis to determine if conditions
     are suitable for trading and in which direction.
 
+    Graduated Conviction:
+    - If 4H and 30M agree: full confidence, normal trade
+    - If 4H has direction but 30M is NEUTRAL: partial alignment, capped confidence
+    - If 4H and 30M OPPOSE each other: no trade (genuine conflict)
+    - If 4H is NEUTRAL: no trade
+
     Args:
         df_4h: 4-hour OHLCV DataFrame
         df_30m: 30-minute OHLCV DataFrame
@@ -253,16 +260,41 @@ def get_trend_state(df_4h: pd.DataFrame, df_30m: pd.DataFrame) -> TrendState:
     Returns:
         TrendState with complete trend information
     """
+    import os
+    allow_partial = os.environ.get("ALLOW_PARTIAL_ALIGNMENT", "true").lower() in ("true", "1", "yes")
+
     # Analyze each timeframe
     direction_4h, meta_4h = analyze_4h_trend(df_4h)
     direction_30m, meta_30m = analyze_30m_trend(df_30m)
 
+    partial_alignment = False
+
     # Determine combined direction
     if direction_4h == direction_30m and direction_4h != TrendDirection.NEUTRAL:
+        # Full alignment
         combined = direction_4h
         logger.info(
             f"TREND ALIGNED: {combined.value.upper()} | "
             f"4H={direction_4h.value} 30M={direction_30m.value}"
+        )
+    elif (allow_partial and
+          direction_4h != TrendDirection.NEUTRAL and
+          direction_30m == TrendDirection.NEUTRAL):
+        # Partial alignment: 4H has direction, 30M is neutral (not opposing)
+        combined = direction_4h
+        partial_alignment = True
+        logger.info(
+            f"TREND PARTIAL ALIGN: {combined.value.upper()} | "
+            f"4H={direction_4h.value} 30M={direction_30m.value} (neutral, not opposing)"
+        )
+    elif (direction_4h != TrendDirection.NEUTRAL and
+          direction_30m != TrendDirection.NEUTRAL and
+          direction_4h != direction_30m):
+        # Opposing trends: genuine conflict, reject
+        combined = TrendDirection.NEUTRAL
+        logger.info(
+            f"TREND OPPOSING: No trade | "
+            f"4H={direction_4h.value} 30M={direction_30m.value} (conflict)"
         )
     else:
         combined = TrendDirection.NEUTRAL
@@ -276,6 +308,22 @@ def get_trend_state(df_4h: pd.DataFrame, df_30m: pd.DataFrame) -> TrendState:
         direction_4h, direction_30m, meta_4h, meta_30m
     )
 
+    # For partial alignment, provide a reduced but non-zero confidence
+    if partial_alignment and confidence == 0.0:
+        # Base partial confidence: weaker than full alignment
+        confidence = 0.35
+        # Small bonus for 4H strength
+        price_4h = meta_4h.get("price", 0)
+        ema_4h = meta_4h.get("ema_50", 0)
+        if ema_4h > 0:
+            distance_pct_4h = abs(price_4h - ema_4h) / ema_4h
+            confidence += min(distance_pct_4h * 8, 0.1)
+        slope = abs(meta_4h.get("ema_slope", 0))
+        if ema_4h > 0:
+            slope_pct = slope / ema_4h
+            confidence += min(slope_pct * 30, 0.1)
+        confidence = min(confidence, 0.55)  # Cap for partial
+
     return TrendState(
         direction_4h=direction_4h,
         direction_30m=direction_30m,
@@ -287,4 +335,5 @@ def get_trend_state(df_4h: pd.DataFrame, df_30m: pd.DataFrame) -> TrendState:
         price_4h=meta_4h.get("price", 0),
         price_30m=meta_30m.get("price", 0),
         confidence=confidence,
+        partial_alignment=partial_alignment,
     )
