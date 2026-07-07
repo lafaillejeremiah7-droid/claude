@@ -25,6 +25,8 @@ import numpy as np
 
 from config import (
     RISK_PERCENT,
+    MIN_RISK_PERCENT,
+    MAX_RISK_PERCENT,
     MAX_TRADES_PER_DAY,
     DAILY_DRAWDOWN_LIMIT,
     WEEKLY_DRAWDOWN_LIMIT,
@@ -40,6 +42,51 @@ logger = logging.getLogger(__name__)
 
 # Path for persisting daily stats
 STATS_FILE = Path(__file__).parent.parent / "logs" / "daily_stats.json"
+
+# Default confidence gate below which a trade is not taken (mirrors the
+# adaptive engine's min_confidence). Used as the lower anchor for scaling risk.
+CONFIDENCE_GATE = 8.0
+CONFIDENCE_MAX = 10.0
+
+
+def confidence_to_risk_pct(
+    confidence: float,
+    gate: float = CONFIDENCE_GATE,
+    min_pct: float = MIN_RISK_PERCENT,
+    max_pct: float = MAX_RISK_PERCENT,
+) -> float:
+    """
+    Map an adaptive confidence score to a risk percentage.
+
+    Risk scales linearly between ``min_pct`` (at the gate) and ``max_pct`` (at a
+    perfect 10.0 score):
+
+        pct = min_pct + ((clamp(conf, gate, 10) - gate) / (10 - gate)) * (max_pct - min_pct)
+
+    With the defaults (gate=8.0, min=1.0, max=3.0):
+        - conf 8.0 -> 1.0%  ($100 on $10k)
+        - conf 9.0 -> 2.0%  ($200 on $10k)
+        - conf 10.0 -> 3.0% ($300 on $10k)
+
+    Confidence is clamped to [gate, 10] so values below the gate still map to
+    ``min_pct`` (never below) and values above 10 map to ``max_pct``.
+
+    Args:
+        confidence: Adaptive confidence score (0-10).
+        gate: Lower confidence anchor (maps to min_pct).
+        min_pct: Risk percent at the gate.
+        max_pct: Risk percent at a perfect score.
+
+    Returns:
+        Risk percentage to use for position sizing.
+    """
+    span = CONFIDENCE_MAX - gate
+    if span <= 0:
+        return max_pct
+
+    clamped = min(max(confidence, gate), CONFIDENCE_MAX)
+    fraction = (clamped - gate) / span
+    return min_pct + fraction * (max_pct - min_pct)
 
 
 @dataclass
@@ -117,8 +164,12 @@ class RiskManager:
     Manages all risk-related calculations and enforces trading limits.
     """
 
-    def __init__(self, risk_percent: float = RISK_PERCENT):
+    def __init__(self, risk_percent: float = RISK_PERCENT, stats_file: Optional[Path] = None):
         self.risk_percent = risk_percent
+        # Allow a custom stats file so parallel runs (e.g. the paper-trading
+        # engine) can persist their own daily/weekly stats without ever
+        # overwriting the live stats file.
+        self.stats_file = Path(stats_file) if stats_file is not None else STATS_FILE
         self.daily_stats = DailyStats()
         self.weekly_stats = WeeklyStats()
         self._load_stats()
@@ -136,9 +187,10 @@ class RiskManager:
         lot_size: float = 1.0,
         min_lot: float = 0.01,
         lot_step: float = 0.01,
+        risk_percent: Optional[float] = None,
     ) -> tuple[float, float]:
         """
-        Calculate position size based on fixed percentage risk.
+        Calculate position size based on percentage risk.
 
         Position Size = (Account Equity * Risk%) / (Entry - SL distance)
 
@@ -152,11 +204,15 @@ class RiskManager:
             lot_size: Contract/lot size
             min_lot: Minimum lot size
             lot_step: Lot size increment
+            risk_percent: Optional override for the risk percentage. When None,
+                the manager's configured ``self.risk_percent`` is used (fixed
+                behavior). Confidence-scaled sizing passes an explicit value here.
 
         Returns:
             Tuple of (lot_quantity, dollar_risk)
         """
-        risk_amount = account_equity * (self.risk_percent / 100.0)
+        effective_risk_pct = self.risk_percent if risk_percent is None else risk_percent
+        risk_amount = account_equity * (effective_risk_pct / 100.0)
         sl_distance = abs(entry_price - stop_loss_price)
 
         if sl_distance <= 0:
@@ -178,7 +234,7 @@ class RiskManager:
         actual_risk = position_size * sl_distance
 
         logger.info(
-            f"Position sizing: equity={account_equity:.2f}, risk%={self.risk_percent}%, "
+            f"Position sizing: equity={account_equity:.2f}, risk%={effective_risk_pct}%, "
             f"risk$={risk_amount:.2f}, SL dist={sl_distance:.5f}, "
             f"size={position_size:.4f}, actual_risk={actual_risk:.2f}"
         )
@@ -368,6 +424,8 @@ class RiskManager:
         lot_size: float = 1.0,
         min_lot: float = 0.01,
         lot_step: float = 0.01,
+        confidence: Optional[float] = None,
+        confidence_gate: float = CONFIDENCE_GATE,
     ) -> TradeSetup:
         """
         Create a complete trade setup with all risk parameters.
@@ -383,6 +441,12 @@ class RiskManager:
             lot_size: Contract size
             min_lot: Minimum lot
             lot_step: Lot increment
+            confidence: Optional adaptive confidence score (0-10). When provided,
+                the trade is sized using confidence-scaled risk
+                (``confidence_to_risk_pct``) between MIN_RISK_PERCENT and
+                MAX_RISK_PERCENT. When None, the manager falls back to the fixed
+                ``self.risk_percent`` behavior (backward compatible).
+            confidence_gate: Confidence gate used as the lower anchor for scaling.
 
         Returns:
             TradeSetup with all parameters calculated
@@ -395,11 +459,45 @@ class RiskManager:
             entry_price, stop_loss, direction, trend_confidence
         )
 
+        # Determine risk percentage: confidence-scaled when a score is provided,
+        # otherwise fall back to the fixed configured risk percent.
+        risk_percent_override = None
+        if confidence is not None:
+            risk_percent_override = confidence_to_risk_pct(
+                confidence, gate=confidence_gate
+            )
+            logger.info(
+                f"Confidence-scaled risk: confidence={confidence:.2f} -> "
+                f"{risk_percent_override:.2f}% (gate={confidence_gate})"
+            )
+
         # Calculate position size
         position_size, risk_amount = self.calculate_position_size(
             account_equity, entry_price, stop_loss,
-            pip_size, lot_size, min_lot, lot_step
+            pip_size, lot_size, min_lot, lot_step,
+            risk_percent=risk_percent_override,
         )
+
+        # RISK vs DAILY-DRAWDOWN INTERACTION:
+        # The 4% daily drawdown lock (DAILY_DRAWDOWN_LIMIT) is enforced separately
+        # in can_trade(). With confidence-scaled sizing a single 3% trade that
+        # stops out consumes 3% of the 4% daily headroom, and combined with an
+        # earlier loss it can trip the daily lock. We surface a WARNING when a
+        # trade's risk exceeds the remaining daily-drawdown headroom so the
+        # operator is aware a stop-out could halt trading for the day. We do NOT
+        # shrink the trade or change DAILY_DRAWDOWN_LIMIT here.
+        if risk_amount > 0 and self.daily_stats.starting_equity > 0:
+            remaining_dd_pct = DAILY_DRAWDOWN_LIMIT - self.daily_stats.drawdown_pct
+            remaining_headroom = self.daily_stats.starting_equity * (
+                remaining_dd_pct / 100.0
+            )
+            if risk_amount > remaining_headroom:
+                logger.warning(
+                    f"Trade risk ${risk_amount:.2f} exceeds remaining daily "
+                    f"drawdown headroom ${remaining_headroom:.2f} "
+                    f"({remaining_dd_pct:.2f}% of {DAILY_DRAWDOWN_LIMIT}% limit). "
+                    f"A stop-out on this trade could trip the daily drawdown lock."
+                )
 
         # Calculate distances and R:R
         sl_distance = abs(entry_price - stop_loss)
@@ -581,8 +679,8 @@ class RiskManager:
                 "daily": asdict(self.daily_stats),
                 "weekly": asdict(self.weekly_stats),
             }
-            STATS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(STATS_FILE, "w") as f:
+            self.stats_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.stats_file, "w") as f:
                 json.dump(data, f, indent=2)
         except Exception as e:
             logger.warning(f"Failed to save stats: {e}")
@@ -590,8 +688,8 @@ class RiskManager:
     def _load_stats(self):
         """Load persisted stats."""
         try:
-            if STATS_FILE.exists():
-                with open(STATS_FILE, "r") as f:
+            if self.stats_file.exists():
+                with open(self.stats_file, "r") as f:
                     data = json.load(f)
 
                 daily_data = data.get("daily", {})
