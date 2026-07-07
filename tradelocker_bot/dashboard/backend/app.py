@@ -35,6 +35,11 @@ from .readers import resolve_bot_dir, resolve_mode
 from .security import CREDENTIAL_FIELDS, load_credentials
 from .store import SnapshotStore
 
+try:
+    from dotenv import load_dotenv as _load_dotenv
+except ImportError:  # pragma: no cover
+    _load_dotenv = None
+
 UTC = timezone.utc
 
 FILE_POLL_INTERVAL = 2.0
@@ -99,6 +104,25 @@ def _requests_secret(request: Request) -> bool:
 
 def create_app(env: Optional[dict] = None) -> FastAPI:
     env = env if env is not None else os.environ
+
+    # Load credentials from the bot's .env file so the dashboard can use the
+    # TradeLocker API without requiring the user to duplicate env vars (Issue 2).
+    # Safe: if the file doesn't exist or dotenv is unavailable, we silently skip.
+    if _load_dotenv is not None:
+        bot_dir = resolve_bot_dir(env)
+        dotenv_path = bot_dir / ".env"
+        if dotenv_path.is_file():
+            _load_dotenv(dotenv_path, override=False)
+            # If env is os.environ, the vars are now available globally.
+            # If env is a custom dict (tests), we merge loaded vars into it
+            # only when it's a mutable mapping referencing os.environ.
+            if env is os.environ:
+                pass  # load_dotenv already populated os.environ
+            else:
+                # For custom env dicts (e.g. tests), don't modify — they control
+                # their own credential presence.
+                pass
+
     store = SnapshotStore(
         secret_values=_secret_values_from_env(env),
         env=env,

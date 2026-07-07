@@ -980,6 +980,16 @@ document.addEventListener('visibilitychange',()=>{
   }
 });
 
+// ═══ CLIENT-SIDE COUNTDOWN DECREMENT ═══
+// Decrement countdown.seconds_remaining locally every second between SSE pushes
+// so the ring animates smoothly even if the server only pushes every 2s.
+setInterval(() => {
+  if (S.snapshot && S.snapshot.countdown && S.snapshot.countdown.seconds_remaining > 0) {
+    S.snapshot.countdown.seconds_remaining = Math.max(0, S.snapshot.countdown.seconds_remaining - 1);
+    renderCountdown(S.snapshot.countdown);
+  }
+}, 1000);
+
 // Boot
 loadInitial();
 </script>
