@@ -4,11 +4,13 @@
 #   - fastapi   : the read-only backend API + SSE stream
 #   - uvicorn   : ASGI server used to run the app
 #   - httpx     : used by fastapi's StarletteTestClient (and handy for probing)
+#   - python-dotenv : loads bot .env for TradeLocker API credentials
 # The pure derivation logic itself is stdlib-only; these are only required to
 # run the HTTP layer and the app/integration tests.
 fastapi>=0.110.0
 uvicorn>=0.27.0
 httpx>=0.27.0
+python-dotenv>=1.0.0
 
 # --- Test/dev only ---
 pytest>=7.4.0
