@@ -143,6 +143,15 @@ HISTORY_CACHE_TTL = _parse_cache_ttl(_env_cache_ttl) if _env_cache_ttl else dict
 # Fallback TTL (seconds) used for any resolution not explicitly listed above.
 HISTORY_CACHE_TTL_DEFAULT = float(os.getenv("HISTORY_CACHE_TTL_DEFAULT", "60.0"))
 
+# === Trading Filter Overrides (for testing / immediate trading) ===
+# Set to "true" to skip the news-event block filter (useful for testing)
+SKIP_NEWS_FILTER = os.getenv("SKIP_NEWS_FILTER", "false").lower() in ("true", "1", "yes")
+# Override avoid_hours (empty = trade all hours, comma-separated UTC hours to skip).
+# If AVOID_HOURS env var is explicitly set (even to empty), it overrides the
+# adaptive engine's learned avoid_hours. If not set at all, the adaptive engine's
+# value from adaptive_config.json stands.
+AVOID_HOURS_STR = os.getenv("AVOID_HOURS", "")
+
 # === Performance Reporting ===
 # Directory (relative to the bot root) where machine-readable performance
 # reports are written. The reporter only ever WRITES inside this directory;
