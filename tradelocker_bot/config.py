@@ -55,7 +55,14 @@ ATR_PERIOD = 14
 SWING_LOOKBACK = 10  # Bars to identify swing highs/lows
 
 # === Risk Management ===
+# RISK_PERCENT is kept as a fallback (used when no confidence score is provided,
+# e.g. legacy/backward-compatible sizing paths).
 RISK_PERCENT = float(os.getenv("RISK_PERCENT", "2.0"))
+# Confidence-scaled position sizing bounds. Risk % scales linearly with the
+# adaptive confidence score between the gate (8.0) and the max (10.0):
+#   conf 8.0 -> MIN_RISK_PERCENT, conf 9.0 -> midpoint, conf 10.0 -> MAX_RISK_PERCENT
+MIN_RISK_PERCENT = float(os.getenv("MIN_RISK_PERCENT", "1.0"))
+MAX_RISK_PERCENT = float(os.getenv("MAX_RISK_PERCENT", "3.0"))
 MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "2"))
 DAILY_DRAWDOWN_LIMIT = float(os.getenv("DAILY_DRAWDOWN_LIMIT", "4.0"))
 WEEKLY_DRAWDOWN_LIMIT = float(os.getenv("WEEKLY_DRAWDOWN_LIMIT", "4.0"))
@@ -81,6 +88,12 @@ SESSIONS = {
 
 # News avoidance buffer (minutes)
 NEWS_BUFFER_MINUTES = 30
+
+# === Paper Trading (--dry mode) ===
+# Starting equity used by the paper-trading engine. Paper current_equity is
+# computed as PAPER_STARTING_EQUITY + realized paper PnL, and paper positions
+# are sized off that paper equity (never the live account balance).
+PAPER_STARTING_EQUITY = float(os.getenv("PAPER_STARTING_EQUITY", "10000.0"))
 
 # === Bot Settings ===
 SCAN_INTERVAL_SECONDS = 60  # How often to check for signals (1 minute)

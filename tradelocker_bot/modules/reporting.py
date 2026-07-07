@@ -474,6 +474,7 @@ class PerformanceReporter:
         mode: str = "live",
         min_sample: int = 5,
         weak_win_rate: float = 0.40,
+        journal_prefix: Optional[str] = None,
         log: Optional[logging.Logger] = None,
     ):
         self.base_dir = Path(base_dir)
@@ -481,6 +482,13 @@ class PerformanceReporter:
         self.min_sample = min_sample
         self.weak_win_rate = weak_win_rate
         self.log = log or logger
+        # Journal filename prefix. The live TradeManager writes journal_<date>.jsonl
+        # while the PaperTradeManager writes paper_journal_<date>.jsonl. Default is
+        # mode-aware so paper reporting reads the paper engine's own journal files.
+        if journal_prefix:
+            self.journal_prefix = journal_prefix
+        else:
+            self.journal_prefix = "paper_journal" if mode == "paper" else "journal"
 
         logs_dir = self.base_dir / "logs"
         # Mode-aware default source files (paper uses *_paper suffix).
@@ -532,11 +540,37 @@ class PerformanceReporter:
 
     def _journal_close_entries(self, date_str: str) -> List[Dict[str, Any]]:
         """CLOSE entries from a specific day's journal file."""
-        path = self.journal_dir / f"journal_{date_str}.jsonl"
+        path = self.journal_dir / f"{self.journal_prefix}_{date_str}.jsonl"
         return [e for e in _load_jsonl(path) if e.get("action") == "CLOSE"]
 
     def _history_daily_entries(self) -> List[Dict[str, Any]]:
         return [e for e in _load_jsonl(self.history_file) if e.get("type") == "daily"]
+
+    # ---------------------------------------------------------------
+    # Optional paper-trade hook
+    # ---------------------------------------------------------------
+    def record_paper_trade(self, trade: Dict[str, Any]) -> None:
+        """
+        Optional hook invoked by the paper-trading engine each time a paper
+        position closes in --dry mode.
+
+        The reporter is fundamentally file-based: the PaperTradeManager already
+        persists closed paper trades to logs/paper_daily_stats.json and the
+        paper journal, which this reporter (mode="paper") reads on rollover via
+        maybe_emit(). This hook therefore does not need to persist anything; it
+        exists so the paper engine can notify the reporter without the call
+        failing, and provides a single place to add live/incremental behavior
+        later. It must never raise into the trading loop.
+        """
+        try:
+            self._last_paper_trade = trade
+            self.log.debug(
+                "[REPORTER] Observed closed paper trade "
+                f"{trade.get('position_id', '?')} "
+                f"({trade.get('r_multiple', 0.0):+.2f}R)"
+            )
+        except Exception:  # pragma: no cover - defensive, never break the loop
+            pass
 
     # ---------------------------------------------------------------
     # Public entry point
@@ -640,8 +674,8 @@ class PerformanceReporter:
         entries: List[Dict[str, Any]] = []
         if not self.journal_dir.exists():
             return entries
-        for path in sorted(self.journal_dir.glob("journal_*.jsonl")):
-            date_part = path.stem.replace("journal_", "")
+        for path in sorted(self.journal_dir.glob(f"{self.journal_prefix}_*.jsonl")):
+            date_part = path.stem.replace(f"{self.journal_prefix}_", "")
             try:
                 d = datetime.strptime(date_part, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             except ValueError:
