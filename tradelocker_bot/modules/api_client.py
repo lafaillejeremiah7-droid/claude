@@ -518,7 +518,7 @@ class TradeLockerClient:
             )
             return None
 
-        bars = data.get("d", {}).get("bars", []) if isinstance(data, dict) else []
+        bars = (data.get("d", {}).get("bars") or data.get("d", {}).get("barDetails") or []) if isinstance(data, dict) else []
         if not bars:
             # Better diagnostics: distinguish a genuinely empty payload from a
             # masked throttle. Log status + top-level JSON keys + a short,
