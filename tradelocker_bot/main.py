@@ -53,14 +53,16 @@ from config import (
     TL_SERVER,
     TL_ENVIRONMENT,
     RISK_PERCENT,
+    PAPER_STARTING_EQUITY,
 )
 from modules.api_client import TradeLockerClient
 from modules.indicators import add_all_indicators
 from modules.trend_analysis import get_trend_state, TrendDirection
 from modules.entry_signals import scan_for_entry
-from modules.risk_management import RiskManager
+from modules.risk_management import RiskManager, confidence_to_risk_pct
 from modules.session_filter import can_trade_now, check_session_status
 from modules.trade_manager import TradeManager
+from modules.paper_trading import PaperTradeManager
 from modules.adaptive_engine import AdaptiveEngine, TradeFeatures
 
 # ========================================
@@ -109,6 +111,16 @@ class TradingBot:
         self.risk_manager = RiskManager()
         self.trade_manager = None  # Initialized after client setup
 
+        # Paper-trading engine (only used in --dry mode). It simulates the full
+        # trade lifecycle against REAL live prices and writes to parallel paper
+        # files, leaving all live files/state completely untouched.
+        self.paper_manager = None
+        if self.dry_run:
+            self.paper_manager = PaperTradeManager(
+                client=self.client,
+                starting_equity=PAPER_STARTING_EQUITY,
+            )
+
         # ADAPTIVE ENGINE - the self-learning brain
         self.adaptive = AdaptiveEngine(
             optimize_every_n=20,       # Re-optimize after every 20 trades
@@ -140,6 +152,10 @@ class TradingBot:
         logger.info(f"Server: {TL_SERVER}")
         logger.info(f"Instruments: {INSTRUMENTS}")
         logger.info(f"Dry Run: {self.dry_run}")
+        if self.dry_run and self.paper_manager:
+            logger.info(
+                f"Paper Mode: ENABLED | Starting Equity: ${self.paper_manager.starting_equity:.2f}"
+            )
         logger.info(f"Scan Interval: {SCAN_INTERVAL_SECONDS}s")
         logger.info(f"Risk Per Trade: {RISK_PERCENT}%")
         logger.info(f"Confidence Threshold: {self.adaptive.params.min_confidence}/10")
@@ -229,8 +245,15 @@ class TradingBot:
 
         equity = balance["equity"]
 
-        # Check if we can trade (risk limits)
-        can_trade, trade_reason = self.risk_manager.can_trade(equity)
+        # Check if we can trade (risk limits).
+        # In dry mode we gate on PAPER stats/equity so the paper run mirrors the
+        # real constraints without ever reading or writing the live stats file.
+        if self.dry_run and self.paper_manager:
+            can_trade, trade_reason = self.paper_manager.risk_manager.can_trade(
+                self.paper_manager.current_equity
+            )
+        else:
+            can_trade, trade_reason = self.risk_manager.can_trade(equity)
 
         # Manage existing positions + check for closed trades
         self._manage_positions_and_learn()
@@ -253,6 +276,33 @@ class TradingBot:
         Manage open positions AND detect closed trades for adaptive learning.
         When a trade closes, record its features + outcome in the adaptive engine.
         """
+        # DRY MODE: manage paper positions against REAL live prices and feed
+        # closed paper trades to adaptive learning (+ PerformanceReporter if any).
+        if self.dry_run:
+            if not self.paper_manager:
+                return
+            closed_trades = self.paper_manager.manage_open_positions()
+            for trade in closed_trades:
+                pos_id = trade["position_id"]
+                features = self.pending_features.pop(pos_id, None)
+                if features is not None:
+                    features.result = "win" if trade["is_win"] else "loss"
+                    features.pnl_r = trade["r_multiple"]
+                    self.adaptive.record_trade(features)
+                    logger.info(
+                        f"[PAPER] ADAPTIVE LEARNING: Recorded closed paper trade {pos_id} | "
+                        f"{features.symbol} {features.direction} | "
+                        f"Result: {features.result} ({features.pnl_r:+.2f}R)"
+                    )
+                # Feed the performance reporter if one is wired up (optional).
+                reporter = getattr(self, "reporter", None)
+                if reporter is not None:
+                    try:
+                        reporter.record_paper_trade(trade)
+                    except Exception as e:
+                        logger.debug(f"[PAPER] Reporter record failed: {e}")
+            return
+
         if not self.trade_manager:
             return
 
@@ -433,7 +483,15 @@ class TradingBot:
             sl_dist = est_sl - entry_price
             est_tp = entry_price - (sl_dist * 2.0)
 
-        risk_amount = equity * 0.02
+        # Confidence-scaled risk for display (1%-3% between gate and a perfect
+        # score). In dry mode we size off paper equity; otherwise live equity.
+        sizing_equity = (
+            self.paper_manager.current_equity
+            if (self.dry_run and self.paper_manager)
+            else equity
+        )
+        risk_pct = confidence_to_risk_pct(confidence)
+        risk_amount = sizing_equity * (risk_pct / 100.0)
         est_win_prob = confidence * 10  # Approximate: 8/10 confidence ~ 80% prob
 
         if not should_trade:
@@ -441,7 +499,7 @@ class TradingBot:
                 f"\n{'- '*25}\n"
                 f"{symbol}: NEAR-MISS ({dir_arrow}) | Confidence: {confidence:.1f}/10 (need 8.0)\n"
                 f"  Entry: ${entry_price:.2f} | SL: ${est_sl:.2f} | TP: ${est_tp:.2f}\n"
-                f"  Risk: ${risk_amount:.2f} | SL Distance: ${sl_dist:.2f}\n"
+                f"  Risk: ${risk_amount:.2f} ({risk_pct:.1f}%) | SL Distance: ${sl_dist:.2f}\n"
                 f"  Est. Win Probability: {est_win_prob:.0f}%\n"
                 f"  Pattern: {entry_signal.candle_pattern} | RSI: {entry_signal.rsi_value:.1f} | Vol: {entry_signal.volume_ratio:.2f}x\n"
                 f"  Reason rejected: {reason}\n"
@@ -458,7 +516,7 @@ class TradingBot:
             f"Direction: {direction.upper()}\n"
             f"Confidence: {confidence:.1f}/10 | Est. Win Prob: {est_win_prob:.0f}%\n"
             f"Entry: ${entry_price:.2f} | SL: ${est_sl:.2f} | TP: ${est_tp:.2f}\n"
-            f"Risk: ${risk_amount:.2f} | Potential Reward: ${risk_amount * 2:.2f}\n"
+            f"Risk: ${risk_amount:.2f} ({risk_pct:.1f}%) | Potential Reward: ${risk_amount * 2:.2f}\n"
             f"Pattern: {entry_signal.candle_pattern}\n"
             f"RSI: {entry_signal.rsi_value:.1f} | Volume: {entry_signal.volume_ratio:.2f}x avg\n"
             f"Trend Confidence: {trend_state.confidence:.2f}\n"
@@ -589,7 +647,47 @@ class TradingBot:
         # Use adaptive trailing params
         trail_trigger, trail_distance = self.adaptive.get_trailing_params()
 
-        # Create complete trade setup
+        entry_reasons = signal.reasons + [f"Confidence: {confidence_score:.1f}/10"]
+
+        # Dry run mode: open a PAPER position (full simulated lifecycle against
+        # real prices). Sized off paper equity with confidence-scaled risk.
+        if self.dry_run and self.paper_manager:
+            position_id = self.paper_manager.open_from_signal(
+                symbol=symbol,
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                df_5m=df_5m,
+                trend_confidence=trend_confidence,
+                confidence=confidence_score,
+                pip_size=pip_size,
+                lot_size=lot_size,
+                min_lot=min_lot,
+                lot_step=lot_step,
+                entry_reasons=entry_reasons,
+            )
+
+            if position_id:
+                # Track features so the outcome can be fed to adaptive learning
+                # when the paper position closes.
+                self.pending_features[position_id] = features
+                paper_pos = self.paper_manager.active_positions.get(position_id)
+                # Keep the existing [DRY RUN] intent line for continuity.
+                logger.info(
+                    f"[DRY RUN] Would execute: {signal.direction.upper()} "
+                    f"{paper_pos.quantity} {symbol} | "
+                    f"Entry={paper_pos.entry_price:.2f} SL={paper_pos.stop_loss:.2f} "
+                    f"TP={paper_pos.take_profit:.2f} | "
+                    f"Risk=${paper_pos.risk_amount:.2f} | "
+                    f"Confidence: {confidence_score:.1f}/10"
+                )
+            else:
+                logger.info(
+                    f"[PAPER] Trade not opened for {symbol} "
+                    f"(paper risk limit or invalid setup)"
+                )
+            return
+
+        # Create complete trade setup (LIVE) with confidence-scaled sizing.
         setup = self.risk_manager.create_trade_setup(
             symbol=symbol,
             direction=signal.direction,
@@ -601,32 +699,17 @@ class TradingBot:
             lot_size=lot_size,
             min_lot=min_lot,
             lot_step=lot_step,
+            confidence=confidence_score,
         )
 
         if not setup.valid:
             logger.warning(f"Trade setup rejected: {setup.rejection_reason}")
             return
 
-        # Dry run mode
-        if self.dry_run:
-            logger.info(
-                f"[DRY RUN] Would execute: {setup.direction.upper()} "
-                f"{setup.position_size} {symbol} | "
-                f"Entry={setup.entry_price:.2f} SL={setup.stop_loss:.2f} "
-                f"TP={setup.take_profit:.2f} | "
-                f"Risk=${setup.risk_amount:.2f} | "
-                f"Confidence: {confidence_score:.1f}/10"
-            )
-            # Still record for learning in dry run
-            features.result = "pending"
-            features.pnl_r = 0.0
-            self.adaptive.record_trade(features)
-            return
-
         # Execute the trade
         position_id = self.trade_manager.open_position(
             setup=setup,
-            entry_reasons=signal.reasons + [f"Confidence: {confidence_score:.1f}/10"],
+            entry_reasons=entry_reasons,
         )
 
         if position_id:
@@ -665,6 +748,14 @@ class TradingBot:
                     f"Entry={pos['entry']:.2f} SL={pos['sl']:.2f} TP={pos['tp']:.2f} | "
                     f"BE={'Yes' if pos['breakeven'] else 'No'}"
                 )
+
+        # Paper trading status (dry mode only)
+        if self.paper_manager:
+            logger.info(f"\nPaper Trading (--dry):")
+            for key, val in self.paper_manager.get_status().items():
+                if key == "positions":
+                    continue
+                logger.info(f"  {key}: {val}")
 
         # Adaptive engine status
         logger.info(f"\nAdaptive Engine:")
