@@ -412,33 +412,48 @@ function render(snap){
   if(!snap)return;
   S.snapshot=snap;
 
+  // Track when this snapshot arrived for local countdown computation
+  _lastSnapshotReceivedAt = Date.now();
+  _lastSnapshotAgeAtReceive = snap.data_age_seconds || (snap.bot_status && snap.bot_status.seconds_since_last_file_mod) || 0;
+
   // Mode badge
   const mode=snap.mode||'paper';
   const badge=$('modeBadge');
   badge.textContent=mode.toUpperCase();
   badge.className='mode-badge '+mode;
 
-  // Account ID
-  $('acctId').textContent=snap.connection?('Auth: '+(snap.connection.auth_status||'--')):'';
+  // Account ID / Auth status — show nothing if ok, show warning if error
+  const authSt=snap.connection&&snap.connection.auth_status;
+  if(authSt&&authSt!=='ok'){
+    $('acctId').textContent='⚠ Auth: '+authSt;
+    $('acctId').style.color='var(--gold)';
+  }else{
+    $('acctId').textContent='';
+  }
 
   // Tape
   renderTape(snap);
 
-  // Hero equity
+  // Hero equity — defensive: accept numeric equity even if equity_available flag is missing
   const acct=snap.account||{};
-  const eq=acct.equity_available?money(acct.equity):'Waiting...';
+  const eqAvail=(acct.equity_available===true)||(typeof acct.equity==='number');
+  const eq=eqAvail?('$'+acct.equity.toFixed(2)):'Waiting...';
   $('heroEquity').textContent=eq;
-  $('heroEquity').style.color=acct.equity_available?'var(--blue)':'var(--muted)';
+  $('heroEquity').style.color=eqAvail?'var(--blue)':'var(--muted)';
   const pnl=snap.pnl||{};
-  $('heroPnl').textContent=pnl.daily_realized_available?money(pnl.daily_realized):'--';
+  const pnlAvail=(pnl.daily_realized_available===true)||(typeof pnl.daily_realized==='number');
+  $('heroPnl').textContent=pnlAvail?money(pnl.daily_realized):'--';
   $('heroPnl').className=cls(pnl.daily_realized);
-  $('heroRet').textContent=pnl.daily_return_pct_available?pct(pnl.daily_return_pct):'--';
+  const retAvail=(pnl.daily_return_pct_available===true)||(typeof pnl.daily_return_pct==='number');
+  $('heroRet').textContent=retAvail?pct(pnl.daily_return_pct):'--';
   $('heroRet').className=cls(pnl.daily_return_pct);
   $('heroSrc').textContent=acct.equity_source||'--';
 
-  // Win stats
+  // Win stats — defensive: compute win rate from wins/losses if daily_win_rate not available
   const ws=snap.win_stats||{};
-  const wr=ws.daily_win_rate_available?ws.daily_win_rate:null;
+  const totalTrades=(ws.wins||0)+(ws.losses||0);
+  const wrAvail=(ws.daily_win_rate_available===true)||(typeof ws.daily_win_rate==='number');
+  const wr=wrAvail?ws.daily_win_rate:(totalTrades>0?((ws.wins||0)/totalTrades*100):null);
   $('winPct').textContent=wr!=null?Math.round(wr)+'%':'--';
   const circumf=175.93;
   const offset=wr!=null?circumf*(1-wr/100):circumf;
@@ -468,8 +483,8 @@ function render(snap){
   // Pipeline
   renderPipeline(snap.bot_status);
 
-  // Countdown
-  renderCountdown(snap.countdown);
+  // Countdown — compute client-side from bot_status + data_age_seconds
+  renderCountdown(snap);
 
   // Positions
   renderPositions(snap.positions||[]);
@@ -482,9 +497,9 @@ function render(snap){
 
   // Footer
   $('footUpdate').textContent=snap.last_update_utc?(snap.last_update_utc.slice(11,19)+' UTC'):'--';
-  $('footAge').textContent=snap.data_age_seconds!=null?(snap.data_age_seconds+'s'):'--';
+  $('footAge').textContent=snap.data_age_seconds!=null?(Math.round(snap.data_age_seconds)+'s'):'--';
   const conn=snap.connection||{};
-  $('footConn').textContent='Files: '+(conn.file_status||'--')+' | API: '+(conn.api_status||'--');
+  $('footConn').textContent='API: '+(conn.api_status||'--');
 
   // Celebrations
   maybeCelebrate(snap);
@@ -492,12 +507,16 @@ function render(snap){
 
 function renderTape(s){
   const acct=s.account||{},pnl=s.pnl||{},ws=s.win_stats||{};
-  $('tapeEquity').textContent=acct.equity_available?money(acct.equity):'--';
-  $('tapePnl').textContent=pnl.daily_realized_available?money(pnl.daily_realized):'--';
-  $('tapeWr').textContent=ws.daily_win_rate_available?(ws.daily_win_rate.toFixed(0)+'%'):'--';
+  // Defensive: accept numeric values even if _available flags are missing
+  const eqAvail=(acct.equity_available===true)||(typeof acct.equity==='number');
+  $('tapeEquity').textContent=eqAvail?money(acct.equity):'--';
+  const pnlAvail=(pnl.daily_realized_available===true)||(typeof pnl.daily_realized==='number');
+  $('tapePnl').textContent=pnlAvail?money(pnl.daily_realized):'--';
+  const wrAvail=(ws.daily_win_rate_available===true)||(typeof ws.daily_win_rate==='number');
+  $('tapeWr').textContent=wrAvail?(ws.daily_win_rate.toFixed(0)+'%'):'--';
   const str=ws.win_streak>0?'W'+ws.win_streak:ws.loss_streak>0?'L'+ws.loss_streak:'--';
   $('tapeStreak').textContent=str;
-  $('tapeSession').textContent=pnl.cumulative_realized!=null?money(pnl.cumulative_realized):'--';
+  $('tapeSession').textContent=(typeof pnl.cumulative_realized==='number')?money(pnl.cumulative_realized):'--';
 }
 
 function renderConfBars(recent){
@@ -598,17 +617,21 @@ function renderPipeline(botStatus){
   });
 }
 
-// ═══ COUNTDOWN ═══
-function renderCountdown(cd){
-  if(!cd){$('cdSecs').textContent='--';$('cdState').textContent='--';return;}
-  const secs=cd.seconds_remaining;
-  $('cdSecs').textContent=secs!=null?secs+'s':'--';
-  const stateMap={scanning:'SCANNING',locked:'LOCKED',paused:'PAUSED',bot_offline:'OFFLINE'};
-  const label=stateMap[cd.state]||(secs!=null&&secs<=0?'DUE':'SCANNING');
-  $('cdState').textContent=label;
+// ═══ COUNTDOWN — computed from bot_status + data_age_seconds ═══
+function renderCountdown(snap){
+  if(!snap){$('cdSecs').textContent='--';$('cdState').textContent='--';return;}
+  const bs=snap.bot_status||{};
+  const age=snap.data_age_seconds||bs.seconds_since_last_file_mod||0;
+  const secs=Math.max(0,SCAN_INTERVAL-Math.round(age));
+  const state=bs.state||'scanning';
+
+  $('cdSecs').textContent=secs+'s';
+  const stateMap={scanning:'SCANNING',locked:'LOCKED',paused:'PAUSED',bot_offline:'OFFLINE',initializing:'INIT'};
+  $('cdState').textContent=secs>0?(stateMap[state]||'SCANNING'):'DUE';
+
   // Ring progress
   const circumf=213.63;
-  const progress=secs!=null?Math.max(0,Math.min(1,secs/SCAN_INTERVAL)):0;
+  const progress=Math.max(0,Math.min(1,secs/SCAN_INTERVAL));
   $('cdRing').style.strokeDashoffset=circumf*(1-progress);
 }
 
@@ -981,13 +1004,18 @@ document.addEventListener('visibilitychange',()=>{
 });
 
 // ═══ CLIENT-SIDE COUNTDOWN DECREMENT ═══
-// Decrement countdown.seconds_remaining locally every second between SSE pushes
-// so the ring animates smoothly even if the server only pushes every 2s.
+// Track when snapshot was received to compute elapsed time locally
+let _lastSnapshotReceivedAt = null;
+let _lastSnapshotAgeAtReceive = 0;
+
+// Tick countdown every second using locally-computed age
 setInterval(() => {
-  if (S.snapshot && S.snapshot.countdown && S.snapshot.countdown.seconds_remaining > 0) {
-    S.snapshot.countdown.seconds_remaining = Math.max(0, S.snapshot.countdown.seconds_remaining - 1);
-    renderCountdown(S.snapshot.countdown);
-  }
+  if (!S.snapshot || !_lastSnapshotReceivedAt) return;
+  const elapsedSinceReceive = (Date.now() - _lastSnapshotReceivedAt) / 1000;
+  const currentAge = _lastSnapshotAgeAtReceive + elapsedSinceReceive;
+  // Update the snapshot's data_age_seconds so renderCountdown uses latest value
+  S.snapshot.data_age_seconds = currentAge;
+  renderCountdown(S.snapshot);
 }, 1000);
 
 // Boot
