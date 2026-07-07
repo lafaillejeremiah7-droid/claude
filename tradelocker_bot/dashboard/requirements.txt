@@ -1,0 +1,3 @@
+# Dashboard test/dev dependencies (the pure derivation logic itself is stdlib-only).
+pytest>=7.4.0
+hypothesis>=6.0.0
