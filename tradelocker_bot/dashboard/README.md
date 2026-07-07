@@ -9,6 +9,69 @@ It **never** writes to bot files and **never** sends trading API calls — every
 open goes through `ReadOnlyGuard.open_readonly`, and secrets are stripped from every
 response with `redact_secrets`.
 
+## End-to-end quickstart (bot in paper mode + live dashboard)
+
+This is the full path to run everything from a single checkout: the self-adaptive
+bot in **paper mode** (`--dry`, simulated trades against real prices, no live orders)
+plus the read-only dashboard watching the paper state in real time.
+
+All commands are run from the **repository root** (the folder that contains
+`tradelocker_bot/`).
+
+**1. Create and activate a virtual environment**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+```
+
+**2. Install the bot deps + the dashboard deps**
+
+```bash
+pip install -r tradelocker_bot/requirements.txt          # bot runtime + tests
+pip install -r tradelocker_bot/dashboard/requirements.txt # dashboard runtime (fastapi/uvicorn/httpx) + tests
+```
+
+**3. Configure credentials**
+
+```bash
+cp tradelocker_bot/.env.example tradelocker_bot/.env
+# edit tradelocker_bot/.env and set TL_EMAIL / TL_PASSWORD / TL_SERVER, etc.
+```
+
+Paper mode simulates trades against real prices, so credentials only need to be
+valid enough to fetch market data. The paper account starts at
+`PAPER_STARTING_EQUITY` (default `10000.0`).
+
+**4. Terminal 1 — run the bot in paper mode**
+
+```bash
+cd tradelocker_bot
+python main.py --dry
+```
+
+In `--dry` mode the bot drives the **PaperTradeManager** (simulated lifecycle,
+confidence-scaled 1–3% sizing) and writes parallel paper files
+(`logs/paper_daily_stats.json`, `journal/paper_journal_*.jsonl`). The
+**PerformanceReporter** runs in `mode="paper"` and emits daily/weekly/monthly
+reports from those paper files on each UTC rollover — the live account files are
+never touched.
+
+**5. Terminal 2 — run the dashboard against the paper state**
+
+```bash
+# from the repository root, with the venv activated
+DASHBOARD_MODE=paper uvicorn tradelocker_bot.dashboard.backend.app:app --port 8080
+```
+
+**6. Open the dashboard**
+
+Visit <http://localhost:8080>. Health check: <http://localhost:8080/api/health>
+returns `{"status":"ok","mode":"paper",...}`.
+
+To run everything against a real/live account instead, drop `--dry` in Terminal 1
+and use `DASHBOARD_MODE=live` in Terminal 2.
+
 ## Architecture
 
 ```
