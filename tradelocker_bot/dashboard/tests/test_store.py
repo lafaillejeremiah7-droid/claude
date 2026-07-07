@@ -1,10 +1,15 @@
 """Tests for the snapshot builder + store (Req 3-16)."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dashboard.backend.readers import FileReader
-from dashboard.backend.store import SnapshotStore, build_snapshot, snapshot_hash
+from dashboard.backend.store import (
+    SnapshotStore,
+    build_snapshot,
+    paper_starting_equity,
+    snapshot_hash,
+)
 
 UTC = timezone.utc
 
@@ -12,6 +17,15 @@ UTC = timezone.utc
 def _snap(bot_dir, mode="live", api_state=None, env=None):
     r = FileReader(bot_dir=bot_dir, mode=mode)
     return build_snapshot(r, api_state=api_state, env=env or {})
+
+
+def _seed_bot_log(bot_dir, lines, date_str=None):
+    """Write a current-day bot log fixture and return its date string."""
+    date_str = date_str or datetime.now(UTC).strftime("%Y-%m-%d")
+    logs = bot_dir / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"bot_{date_str}.log").write_text("".join(lines), encoding="utf-8")
+    return date_str
 
 
 def test_snapshot_assembles_expected_fields(live_bot_dir):
@@ -98,3 +112,78 @@ def test_store_refresh_and_get(live_bot_dir):
     s = store.get()
     assert s["mode"] == "live"
     assert store.content_hash is not None
+
+
+# ---- paper starting-equity fallback (before the first paper trade) ------
+def test_paper_start_equity_helper_defaults_and_env():
+    assert paper_starting_equity({}) == 10000.0
+    assert paper_starting_equity({"PAPER_STARTING_EQUITY": "10109.58"}) == 10109.58
+    # Blank / non-numeric fall back to the default rather than raising.
+    assert paper_starting_equity({"PAPER_STARTING_EQUITY": ""}) == 10000.0
+    assert paper_starting_equity({"PAPER_STARTING_EQUITY": "nope"}) == 10000.0
+
+
+def test_paper_mode_uses_starting_equity_when_no_daily_stats(tmp_path):
+    # Paper mode, but no paper_daily_stats.json exists yet (no paper trade closed).
+    s = _snap(tmp_path, mode="paper", env={"PAPER_STARTING_EQUITY": "10109.58"})
+    assert s["account"]["equity_source"] == "paper_start"
+    assert s["account"]["equity"] == 10109.58
+    assert s["account"]["balance"] == 10109.58
+    assert s["account"]["equity_available"] is True
+    assert s["account"]["balance_available"] is True
+
+
+def test_paper_mode_defaults_to_10000_when_env_absent(tmp_path):
+    s = _snap(tmp_path, mode="paper", env={})
+    assert s["account"]["equity_source"] == "paper_start"
+    assert s["account"]["equity"] == 10000.0
+
+
+def test_paper_mode_uses_paper_stats_when_present(paper_bot_dir):
+    # Once the paper stats file appears, its current_equity is used (source "paper").
+    s = _snap(paper_bot_dir, mode="paper", env={"PAPER_STARTING_EQUITY": "10109.58"})
+    assert s["account"]["equity_source"] == "paper"
+    assert s["account"]["equity"] == 10142.30
+
+
+# ---- live scan-activity feed (before the first trade) -------------------
+def test_feed_includes_log_scan_events_newest_first(tmp_path):
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    _seed_bot_log(tmp_path, [
+        f"{today} 10:00:00 | INFO | main | BTCUSD: REJECTED | Trends not aligned | 4H=up vs 30M=down\n",
+        f"{today} 10:05:00 | INFO | main | ETHUSD: NEAR-MISS (LONG) | Confidence: 7.5/10 (need 8.0)\n",
+        f"{today} 10:10:00 | INFO | main | approved-scan\n"
+        "TRADE SIGNAL APPROVED (Adaptive)\n"
+        "Symbol: BTCUSD\n"
+        "Confidence: 8.5/10 | Est. Win Prob: 85%\n"
+        "Entry: $67250.50 | SL: $66980.00 | TP: $67791.50\n",
+    ], date_str=today)
+    s = _snap(tmp_path, mode="paper", env={})
+    assert s["feed_empty"] is False
+    events = [f for f in s["feed"] if f["kind"] == "event"]
+    actions = {f["action"] for f in events}
+    assert {"REJECTED", "NEAR_MISS", "APPROVED"} <= actions
+    # Newest-first ordering by parsed timestamp.
+    timestamps = [f["timestamp_utc"] for f in events]
+    assert timestamps == sorted(timestamps, reverse=True)
+    # Messages parsed from the log lines are surfaced.
+    rej = next(f for f in events if f["action"] == "REJECTED")
+    assert "Trends not aligned" in rej["message"]
+    # Confidence panel populated from the NEAR-MISS / APPROVED lines.
+    assert any(c["source"] == "log" for c in s["confidence"]["recent"])
+
+
+# ---- bot-offline detection considers the bot log ------------------------
+def test_bot_online_when_log_recent_even_without_trades(tmp_path):
+    now = datetime.now(UTC)
+    today = now.strftime("%Y-%m-%d")
+    recent = (now - timedelta(seconds=10)).strftime("%Y-%m-%d %H:%M:%S")
+    _seed_bot_log(tmp_path, [
+        f"{recent} | INFO | main | Scanning instruments...\n",
+        f"{recent} | INFO | main | BTCUSD: REJECTED | Trends not aligned | 4H=up vs 30M=down\n",
+    ], date_str=today)
+    # Paper mode, no stats/journal/positions -> only the bot log exists.
+    r = FileReader(bot_dir=tmp_path, mode="paper")
+    s = build_snapshot(r, env={})
+    assert s["bot_status"]["state"] != "bot_offline"
+    assert s["bot_status"]["state"] == "scanning"

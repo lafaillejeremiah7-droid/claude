@@ -98,3 +98,53 @@ def test_parse_log_text_extracts_scan_and_confidence(live_bot_dir):
 def test_parse_log_text_empty():
     assert parse_log_text("")["last_scan_utc"] is None
     assert parse_log_text(None)["events"] == []
+
+
+def test_parse_log_text_includes_rejected_approved_and_paper_events():
+    """The log parser surfaces REJECTED / NEAR-MISS / APPROVED / PAPER events."""
+    text = (
+        "2024-06-10 09:59:00 | INFO | main | Scanning instruments...\n"
+        "2024-06-10 10:00:00 | INFO | main | BTCUSD: REJECTED | Trends not aligned | 4H=up vs 30M=down\n"
+        "2024-06-10 10:05:00 | INFO | main | ETHUSD: NEAR-MISS (LONG) | Confidence: 7.5/10 (need 8.0)\n"
+        "  Entry: $3200.00 | SL: $3180.00 | TP: $3240.00\n"
+        "2024-06-10 10:10:00 | INFO | main | \n"
+        "==================================================\n"
+        "TRADE SIGNAL APPROVED (Adaptive)\n"
+        "==================================================\n"
+        "Symbol: BTCUSD\n"
+        "Direction: BULLISH\n"
+        "Confidence: 8.5/10 | Est. Win Prob: 85%\n"
+        "Entry: $67250.50 | SL: $66980.00 | TP: $67791.50\n"
+        "2024-06-10 10:15:00 | INFO | modules.paper_trading | [PAPER] POSITION OPENED: BUY 0.12 BTCUSD | "
+        "Entry=67250.50 SL=66980.00 TP=67791.50 | Risk=$200.00 R:R=2.00 | Equity=$10109.58 | ID=abc123\n"
+        "2024-06-10 10:20:00 | INFO | modules.paper_trading | [PAPER] POSITION CLOSED (WIN): BTCUSD buy | "
+        "Entry=67250.50 Exit=67791.50 | PnL=$64.98 (2.00R) | Equity=$10174.56\n"
+    )
+    result = parse_log_text(text)
+    by_action = {e["action"]: e for e in result["events"]}
+    assert set(by_action) >= {"REJECTED", "NEAR_MISS", "APPROVED", "PAPER_OPEN", "PAPER_CLOSE"}
+    # Symbols extracted for each notable kind.
+    assert by_action["REJECTED"]["symbol"] == "BTCUSD"
+    assert by_action["NEAR_MISS"]["symbol"] == "ETHUSD"
+    assert by_action["APPROVED"]["symbol"] == "BTCUSD"
+    assert by_action["PAPER_OPEN"]["symbol"] == "BTCUSD"
+    assert by_action["PAPER_CLOSE"]["symbol"] == "BTCUSD"
+    # Reason / message preserved for the rejection.
+    assert "Trends not aligned" in by_action["REJECTED"]["message"]
+    # Confidence entries only come from NEAR-MISS / APPROVED blocks.
+    conf_values = {c["value"] for c in result["confidence"]}
+    assert conf_values == {7.5, 8.5}
+    # Every timestamped line contributes to the latest-scan timestamp.
+    assert isinstance(result["last_scan_utc"], datetime)
+    assert result["last_scan_utc"] == datetime(2024, 6, 10, 10, 20, 0, tzinfo=UTC)
+
+
+def test_parse_log_text_skips_unparseable_and_prefix_lines():
+    """Lines before the first timestamp and junk lines are tolerated."""
+    text = (
+        "no timestamp here, ignore me\n"
+        "2024-06-10 10:00:00 | INFO | main | XAUUSD: REJECTED | ATR too volatile (95% percentile > 90% max)\n"
+    )
+    result = parse_log_text(text)
+    assert [e["action"] for e in result["events"]] == ["REJECTED"]
+    assert result["events"][0]["symbol"] == "XAUUSD"
