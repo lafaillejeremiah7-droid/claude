@@ -356,87 +356,112 @@ class TradeLockerClient:
             f"{self.base_url}/trade/accounts/{self.account_id}/accountDetails",
             f"{self.base_url}/trade/accounts/{self.account_id}/details",
             f"{self.base_url}/trade/accountDetails",
+            f"{self.base_url}/trade/accounts/{self.account_id}/state",
         ]
 
         for url in endpoints:
             try:
                 resp = self.session.get(url, headers=headers)
-                if resp.status_code == 404:
+                if resp.status_code in (404, 405):
                     continue  # Try next endpoint
                 resp.raise_for_status()
                 data = resp.json()
-                details = data.get("d", {})
+                raw = data.get("d", data)
 
-                # The response might have different field names
-                balance = (
-                    details.get("balance", 0) or
-                    details.get("accountBalance", 0) or
-                    details.get("Balance", 0) or 0
-                )
-                equity = (
-                    details.get("equity", 0) or
-                    details.get("accountEquity", 0) or
-                    details.get("Equity", 0) or
-                    balance  # fallback to balance if no equity field
-                )
-                free_margin = (
-                    details.get("freeMargin", 0) or
-                    details.get("availableMargin", 0) or
-                    details.get("FreeMargin", 0) or 0
-                )
+                # Handle dict response
+                if isinstance(raw, dict):
+                    balance = float(
+                        raw.get("balance", 0) or
+                        raw.get("accountBalance", 0) or
+                        raw.get("Balance", 0) or 0
+                    )
+                    equity = float(
+                        raw.get("equity", 0) or
+                        raw.get("accountEquity", 0) or
+                        raw.get("Equity", 0) or
+                        balance
+                    )
+                    free_margin = float(
+                        raw.get("freeMargin", 0) or
+                        raw.get("availableMargin", 0) or
+                        raw.get("FreeMargin", 0) or 0
+                    )
 
-                # If details is a list (some versions return array of fields)
-                if isinstance(details, list) and len(details) > 0:
-                    # TradeLocker v1 returns field values as arrays
-                    # The field names come from /trade/config
-                    # Common positions: balance=index 0, equity=index 1
+                    if balance > 0 or equity > 0:
+                        result = {
+                            "balance": balance,
+                            "equity": equity if equity > 0 else balance,
+                            "freeMargin": free_margin,
+                            "marginLevel": float(raw.get("marginLevel", 0)),
+                            "unrealizedPnL": float(raw.get("unrealizedPnL", 0)),
+                        }
+                        logger.info(
+                            f"Account balance: ${result['equity']:.2f} equity "
+                            f"(via {url.split('/')[-1]})"
+                        )
+                        return result
+
+                # Handle list/array response (TradeLocker v1 format)
+                # The accountDetails endpoint returns field values as a list
+                # Field order defined by /trade/config: typically
+                # [balance, equity, freeMargin, marginLevel, ...]
+                elif isinstance(raw, list) and len(raw) > 0:
                     try:
-                        balance = float(details[0]) if len(details) > 0 else 0
-                        equity = float(details[1]) if len(details) > 1 else balance
-                        free_margin = float(details[2]) if len(details) > 2 else 0
-                    except (ValueError, TypeError):
+                        balance = float(raw[0]) if len(raw) > 0 else 0
+                        equity = float(raw[1]) if len(raw) > 1 else balance
+                        free_margin = float(raw[2]) if len(raw) > 2 else 0
+                        if balance > 0 or equity > 0:
+                            result = {
+                                "balance": balance,
+                                "equity": equity,
+                                "freeMargin": free_margin,
+                                "marginLevel": float(raw[3]) if len(raw) > 3 else 0,
+                                "unrealizedPnL": float(raw[4]) if len(raw) > 4 else 0,
+                            }
+                            logger.info(
+                                f"Account balance: ${result['equity']:.2f} equity "
+                                f"(via {url.split('/')[-1]}, array format)"
+                            )
+                            return result
+                    except (ValueError, TypeError, IndexError):
                         pass
 
-                result = {
-                    "balance": float(balance),
-                    "equity": float(equity),
-                    "freeMargin": float(free_margin),
-                    "marginLevel": float(details.get("marginLevel", 0) if isinstance(details, dict) else 0),
-                    "unrealizedPnL": float(details.get("unrealizedPnL", 0) if isinstance(details, dict) else 0),
-                }
+                # Handle nested response with 'accounts' key
+                if isinstance(raw, dict) and "accounts" in raw:
+                    accounts = raw["accounts"]
+                    if accounts and isinstance(accounts, list):
+                        acct = accounts[0]
+                        balance = float(acct.get("balance", acct.get("equity", 0)))
+                        if balance > 0:
+                            return {
+                                "balance": balance,
+                                "equity": balance,
+                                "freeMargin": balance,
+                                "marginLevel": 0,
+                                "unrealizedPnL": 0,
+                            }
 
-                logger.info(
-                    f"Account balance: ${result['equity']:.2f} equity, "
-                    f"${result['balance']:.2f} balance (via {url.split('/')[-1]})"
-                )
-                return result
-
-            except requests.exceptions.RequestException as e:
-                if "404" not in str(e):
-                    logger.error(f"Failed to get account balance from {url}: {e}")
+            except requests.exceptions.RequestException:
+                continue
+            except (ValueError, KeyError, TypeError):
                 continue
 
-        # Last resort: try the state endpoint
-        try:
-            url = f"{self.base_url}/trade/accounts/{self.account_id}/state"
-            resp = self.session.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                state = data.get("d", data)
-                if isinstance(state, dict):
-                    balance = float(state.get("balance", state.get("equity", 5000)))
-                    return {
-                        "balance": balance,
-                        "equity": balance,
-                        "freeMargin": balance,
-                        "marginLevel": 0,
-                        "unrealizedPnL": 0,
-                    }
-        except Exception:
-            pass
-
-        logger.error("Failed to get account balance from all endpoints")
-        return None
+        # FALLBACK: Use configured starting equity from .env
+        # This allows the bot to operate even if balance endpoint is unavailable
+        # The bot will use the configured account size for position sizing
+        import os
+        fallback_equity = float(os.getenv("ACCOUNT_BALANCE", "5000"))
+        logger.warning(
+            f"Could not fetch balance from API. Using fallback: ${fallback_equity:.2f}. "
+            f"Set ACCOUNT_BALANCE in .env to your actual balance."
+        )
+        return {
+            "balance": fallback_equity,
+            "equity": fallback_equity,
+            "freeMargin": fallback_equity,
+            "marginLevel": 0,
+            "unrealizedPnL": 0,
+        }
 
     # ========================================
     # ORDER MANAGEMENT
