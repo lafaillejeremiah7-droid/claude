@@ -1,399 +1,986 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>TradeLocker Dashboard</title>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>NEXUS Trading Terminal</title>
 <style>
-  :root {
-    --bg: #0a0e14; --panel: #10151f; --border: #1e2733;
-    --fg: #d7dde5; --muted: #6b7688; --amber: #f5a623;
-    --green: #35d07f; --red: #ff5d5d; --neutral: #8b93a1;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--fg);
-    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-    font-size: 13px; line-height: 1.5;
-  }
-  header {
-    display: flex; align-items: center; gap: 16px;
-    padding: 10px 16px; border-bottom: 1px solid var(--border);
-    background: #0c1119;
-  }
-  header h1 { font-size: 15px; margin: 0; color: var(--amber); letter-spacing: .5px; }
-  .badge {
-    padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700;
-    text-transform: uppercase; border: 1px solid var(--border);
-  }
-  .badge.live { background: #14311f; color: var(--green); border-color: #1d6b3e; }
-  .badge.paper { background: #33260c; color: var(--amber); border-color: #6b4d1d; }
-  #clock { margin-left: auto; color: var(--muted); }
-  #conn { font-size: 11px; }
-  #conn.ok { color: var(--green); } #conn.warn { color: var(--amber); } #conn.err { color: var(--red); }
-  .grid {
-    display: grid; gap: 10px; padding: 12px;
-    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  }
-  .panel {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 5px; padding: 12px; min-height: 90px;
-  }
-  .panel h2 {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
-    color: var(--muted); margin: 0 0 10px; border-bottom: 1px solid var(--border);
-    padding-bottom: 6px;
-  }
-  .row { display: flex; justify-content: space-between; padding: 2px 0; }
-  .row .k { color: var(--muted); }
-  .big { font-size: 24px; font-weight: 700; }
-  .green { color: var(--green); } .red { color: var(--red); } .neutral { color: var(--neutral); }
-  .muted { color: var(--muted); }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { text-align: right; padding: 3px 6px; }
-  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
-  th:first-child, td:first-child { text-align: left; }
-  .feed { max-height: 220px; overflow-y: auto; }
-  .feed .item { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed #182029; }
-  .tag { padding: 0 5px; border-radius: 3px; font-size: 10px; font-weight: 700; }
-  .tag.OPEN { background:#14311f;color:var(--green);} .tag.CLOSE{background:#33260c;color:var(--amber);}
-  .tag.NEAR_MISS{background:#2a1520;color:#e07;} .tag.APPROVED{background:#132b3a;color:#4ab;}
-  .empty { color: var(--muted); font-style: italic; padding: 12px 0; text-align:center; }
-  canvas { width: 100%; height: 140px; display: block; }
-  ul.improve { margin: 4px 0; padding-left: 16px; } ul.improve li { margin: 2px 0; }
-  #celebrate {
-    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-    background: rgba(0,0,0,.7); z-index: 99; font-size: 40px; color: var(--green);
-    flex-direction: column; text-align:center;
-  }
-  .gate-bar { height: 8px; background:#0c1119; border-radius:4px; overflow:hidden; margin-top:6px; }
-  .gate-fill { height:100%; background: var(--amber); }
+:root{
+  --bg:#0c1220;--panel:rgba(255,255,255,0.03);--border:rgba(255,255,255,0.08);
+  --fg:#e2e8f0;--muted:#94a3b8;--blue:#3b82f6;--gold:#f59e0b;
+  --green:#10b981;--rose:#f43f5e;--navy:#1e293b;
+  --glow-blue:0 0 20px rgba(59,130,246,0.15);
+  --glow-gold:0 0 20px rgba(245,158,11,0.1);
+  --radius:14px;--blur:8px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{
+  background:var(--bg);color:var(--fg);
+  font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  font-size:13px;line-height:1.5;overflow-x:hidden;min-height:100vh;
+}
+.mono{font-family:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;}
+#bgMesh{position:fixed;inset:0;z-index:0;pointer-events:none;width:100%;height:100%;}
+#app{position:relative;z-index:1;max-width:1680px;margin:0 auto;padding:0 12px 24px;}
+
+/* HEADER */
+.header{
+  display:flex;align-items:center;height:48px;padding:0 16px;gap:12px;
+  border-bottom:1px solid var(--border);backdrop-filter:blur(var(--blur));
+  background:rgba(12,18,32,0.85);position:sticky;top:0;z-index:50;
+}
+.brand{font-size:16px;font-weight:800;letter-spacing:2px;color:var(--blue);text-transform:uppercase;}
+.mode-badge{
+  padding:2px 10px;border-radius:20px;font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:1px;
+}
+.mode-badge.paper{background:rgba(245,158,11,0.12);color:var(--gold);border:1px solid rgba(245,158,11,0.3);}
+.mode-badge.live{background:rgba(16,185,129,0.12);color:var(--green);border:1px solid rgba(16,185,129,0.3);}
+.tape{
+  flex:1;overflow:hidden;white-space:nowrap;font-size:11px;color:var(--muted);
+  mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent);
+  -webkit-mask-image:linear-gradient(90deg,transparent,#000 10%,#000 90%,transparent);
+}
+.tape-inner{display:inline-block;animation:scroll 30s linear infinite;}
+@keyframes scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.tape-item{display:inline-block;padding:0 16px;}
+.tape-item .label{color:var(--muted);margin-right:4px;}
+.tape-item .val{color:var(--fg);}
+.clock{font-size:14px;font-weight:600;letter-spacing:1px;}
+.conn-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:8px;}
+.conn-dot.ok{background:var(--green);box-shadow:0 0 6px var(--green);}
+.conn-dot.warn{background:var(--gold);box-shadow:0 0 6px var(--gold);}
+.conn-dot.err{background:var(--rose);box-shadow:0 0 6px var(--rose);}
+
+/* GRID */
+.row-grid{display:grid;gap:12px;margin-top:12px;}
+.row-hero{grid-template-columns:1.5fr 1fr 1fr;}
+.row-sig{grid-template-columns:1.4fr 1fr;}
+.row-exec{grid-template-columns:2fr 1fr;}
+.row-data{grid-template-columns:1fr 1fr 1fr;}
+@media(max-width:1100px){
+  .row-hero,.row-sig,.row-exec,.row-data{grid-template-columns:1fr;}
+}
+
+/* CARD */
+.card{
+  background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px 20px;backdrop-filter:blur(var(--blur));
+  transition:box-shadow .3s,border-color .3s;
+}
+.card:hover{border-color:rgba(59,130,246,0.2);box-shadow:var(--glow-blue);}
+.card-title{
+  font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.5px;
+  color:var(--muted);margin-bottom:10px;
+}
+.big-num{font-size:32px;font-weight:800;letter-spacing:-0.5px;}
+.sub-val{font-size:13px;color:var(--muted);margin-top:2px;}
+
+/* COLORS */
+.green{color:var(--green);}.rose{color:var(--rose);}.gold{color:var(--gold);}
+.blue{color:var(--blue);}.muted{color:var(--muted);}
+
+/* WIN RING */
+.ring-wrap{position:relative;width:64px;height:64px;margin:0 auto 8px;}
+.ring-wrap svg{transform:rotate(-90deg);}
+.ring-center{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:14px;font-weight:700;
+}
+
+/* CONFIDENCE BARS */
+.conf-bars{display:flex;gap:3px;align-items:flex-end;height:32px;margin-top:8px;}
+.conf-bar{
+  flex:1;min-width:6px;border-radius:3px 3px 0 0;transition:height .3s;
+  background:rgba(59,130,246,0.3);
+}
+.conf-bar.met{background:var(--blue);}
+.conf-bar.miss{background:rgba(148,163,184,0.2);}
+.conf-bar.latest{box-shadow:0 0 6px var(--blue);}
+
+/* PIPELINE */
+.pipeline{display:flex;align-items:center;gap:0;flex-wrap:wrap;}
+.pipe-step{
+  padding:6px 14px;font-size:10px;font-weight:700;letter-spacing:1px;
+  background:rgba(255,255,255,0.02);border:1px solid var(--border);
+  color:var(--muted);position:relative;
+}
+.pipe-step:first-child{border-radius:var(--radius) 0 0 var(--radius);}
+.pipe-step:last-child{border-radius:0 var(--radius) var(--radius) 0;}
+.pipe-step.active{
+  background:rgba(59,130,246,0.12);border-color:rgba(59,130,246,0.4);
+  color:var(--blue);box-shadow:var(--glow-blue);
+}
+.pipe-arrow{color:var(--muted);font-size:10px;padding:0 2px;}
+
+/* COUNTDOWN RING */
+.cd-ring-wrap{position:relative;width:80px;height:80px;margin:0 auto;}
+.cd-ring-wrap svg{transform:rotate(-90deg);}
+.cd-center{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+}
+.cd-secs{font-size:22px;font-weight:800;}
+.cd-label{font-size:9px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);}
+
+/* TABLE */
+.pos-table{width:100%;border-collapse:collapse;font-size:11px;}
+.pos-table th{
+  text-align:right;padding:6px 8px;color:var(--muted);font-weight:600;
+  border-bottom:1px solid var(--border);font-size:10px;text-transform:uppercase;letter-spacing:.5px;
+}
+.pos-table th:first-child,.pos-table td:first-child{text-align:left;}
+.pos-table td{padding:5px 8px;text-align:right;border-bottom:1px solid rgba(255,255,255,0.03);}
+
+/* FEED */
+.feed-list{max-height:260px;overflow-y:auto;padding-right:4px;}
+.feed-list::-webkit-scrollbar{width:4px;}
+.feed-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.feed-item{
+  display:flex;align-items:center;gap:8px;padding:5px 0;
+  border-bottom:1px solid rgba(255,255,255,0.03);font-size:11px;
+}
+.feed-time{color:var(--muted);width:56px;flex-shrink:0;}
+.action-pill{
+  padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.5px;
+}
+.action-pill.OPEN{background:rgba(16,185,129,0.12);color:var(--green);}
+.action-pill.CLOSE{background:rgba(245,158,11,0.12);color:var(--gold);}
+.action-pill.BREAKEVEN{background:rgba(59,130,246,0.12);color:var(--blue);}
+.action-pill.REJECTED{background:rgba(148,163,184,0.08);color:var(--muted);}
+.action-pill.NEAR_MISS{background:rgba(244,63,94,0.12);color:var(--rose);}
+.action-pill.APPROVED{background:rgba(59,130,246,0.12);color:var(--blue);}
+.action-pill.SCAN{background:rgba(148,163,184,0.06);color:var(--muted);}
+
+/* CANVAS */
+.chart-canvas{width:100%;height:160px;display:block;border-radius:8px;}
+.graph-canvas{width:100%;height:280px;display:block;}
+
+/* EMPTY STATE */
+.empty-state{
+  color:var(--muted);font-style:italic;text-align:center;padding:20px 0;
+  font-size:12px;
+}
+
+/* CELEBRATION */
+.celebrate-overlay{
+  position:fixed;inset:0;display:none;align-items:center;justify-content:center;
+  background:rgba(12,18,32,0.85);backdrop-filter:blur(12px);z-index:999;
+  flex-direction:column;
+}
+.celebrate-overlay.show{display:flex;animation:fadeIn .3s ease;}
+.celebrate-card{
+  background:rgba(255,255,255,0.04);border:1px solid rgba(16,185,129,0.3);
+  border-radius:20px;padding:40px 60px;text-align:center;
+  box-shadow:0 0 60px rgba(16,185,129,0.1);
+  animation:scaleIn .4s cubic-bezier(.4,0,.2,1);
+}
+.celebrate-title{font-size:14px;color:var(--gold);letter-spacing:3px;text-transform:uppercase;margin-bottom:8px;}
+.celebrate-amount{font-size:48px;font-weight:800;color:var(--green);}
+.celebrate-sub{font-size:13px;color:var(--muted);margin-top:8px;}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes scaleIn{from{transform:scale(.8);opacity:0}to{transform:scale(1);opacity:1}}
+
+/* FOOTER */
+.footer{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:10px 16px;margin-top:12px;font-size:10px;color:var(--muted);
+  border-top:1px solid var(--border);
+}
+.footer-item{display:flex;align-items:center;gap:6px;}
+
+/* REPORTS */
+.report-section{margin-bottom:10px;}
+.report-header{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;}
+.report-row{display:flex;justify-content:space-between;padding:3px 0;font-size:12px;}
+.improve-list{margin:6px 0 0 14px;font-size:11px;color:var(--muted);}
+.improve-list li{margin:3px 0;}
 </style>
 </head>
 <body>
-<header>
-  <h1>TRADELOCKER DASHBOARD</h1>
-  <span id="mode" class="badge">--</span>
-  <span id="status" class="muted"></span>
-  <span id="clock">--:--:-- UTC</span>
-  <span id="conn" class="warn">connecting</span>
-</header>
-
-<div class="grid">
-  <div class="panel" id="p-account">
-    <h2>Account / Equity</h2>
-    <div class="big" id="equity">--</div>
-    <div class="row"><span class="k">Balance</span><span id="balance">--</span></div>
-    <div class="row"><span class="k">Free margin</span><span id="freemargin">--</span></div>
-    <div class="row"><span class="k">Source</span><span id="equitysrc" class="muted">--</span></div>
+<canvas id="bgMesh"></canvas>
+<div id="app">
+<!-- HEADER -->
+<div class="header">
+  <span class="brand">NEXUS</span>
+  <span id="modeBadge" class="mode-badge paper">PAPER</span>
+  <span id="acctId" class="muted" style="font-size:10px;"></span>
+  <div class="tape">
+    <div class="tape-inner" id="tapeInner">
+      <span class="tape-item"><span class="label">EQUITY</span><span class="val mono" id="tapeEquity">--</span></span>
+      <span class="tape-item"><span class="label">DAILY P&L</span><span class="val mono" id="tapePnl">--</span></span>
+      <span class="tape-item"><span class="label">WIN RATE</span><span class="val mono" id="tapeWr">--</span></span>
+      <span class="tape-item"><span class="label">STREAK</span><span class="val mono" id="tapeStreak">--</span></span>
+      <span class="tape-item"><span class="label">SESSION</span><span class="val mono" id="tapeSession">--</span></span>
+      <!-- duplicated for seamless scroll -->
+      <span class="tape-item"><span class="label">EQUITY</span><span class="val mono">--</span></span>
+      <span class="tape-item"><span class="label">DAILY P&L</span><span class="val mono">--</span></span>
+      <span class="tape-item"><span class="label">WIN RATE</span><span class="val mono">--</span></span>
+      <span class="tape-item"><span class="label">STREAK</span><span class="val mono">--</span></span>
+      <span class="tape-item"><span class="label">SESSION</span><span class="val mono">--</span></span>
+    </div>
   </div>
+  <span class="clock mono" id="clock">--:--:--</span>
+  <span class="conn-dot warn" id="connDot" title="connecting"></span>
+</div>
 
-  <div class="panel" id="p-pnl">
-    <h2>P&amp;L</h2>
-    <div class="row"><span class="k">Daily realized</span><span id="dailypnl">--</span></div>
-    <div class="row"><span class="k">Daily return</span><span id="dailyret">--</span></div>
-    <div class="row"><span class="k">Cumulative</span><span id="cumpnl">--</span></div>
-    <div class="row"><span class="k">Unrealized</span><span id="unrealpnl">--</span></div>
+<!-- ROW 2: HERO METRICS -->
+<div class="row-grid row-hero">
+  <div class="card" id="cardEquity">
+    <div class="card-title">Account Equity</div>
+    <div class="big-num mono" id="heroEquity" style="color:var(--blue);">--</div>
+    <div class="sub-val"><span id="heroPnl">--</span> today &nbsp;|&nbsp; <span id="heroRet">--</span> return</div>
+    <div class="sub-val muted" style="margin-top:4px;font-size:10px;">Source: <span id="heroSrc">--</span></div>
   </div>
-
-  <div class="panel" id="p-win">
-    <h2>Win Stats</h2>
-    <div class="row"><span class="k">Daily win rate</span><span id="dailywr">--</span></div>
-    <div class="row"><span class="k">Adaptive win rate</span><span id="adaptwr">--</span></div>
-    <div class="row"><span class="k">W / L</span><span id="wl">--</span></div>
-    <div class="row"><span class="k">Streak</span><span id="streak">--</span></div>
+  <div class="card" id="cardWin">
+    <div class="card-title">Win Statistics</div>
+    <div class="ring-wrap">
+      <svg width="64" height="64" viewBox="0 0 64 64">
+        <circle cx="32" cy="32" r="28" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="5"/>
+        <circle id="winRing" cx="32" cy="32" r="28" fill="none" stroke="var(--blue)" stroke-width="5"
+          stroke-dasharray="175.93" stroke-dashoffset="175.93" stroke-linecap="round"/>
+      </svg>
+      <div class="ring-center mono" id="winPct">--</div>
+    </div>
+    <div style="text-align:center;font-size:12px;">
+      <span id="winWL">0 / 0</span> &nbsp;
+      <span id="winStreak" style="font-weight:700;">--</span>
+    </div>
   </div>
-
-  <div class="panel" id="p-conf">
-    <h2>Confidence vs Gate</h2>
-    <div class="row"><span class="k">Gate</span><span id="gate">--</span></div>
-    <div class="gate-bar"><div class="gate-fill" id="gatefill" style="width:0%"></div></div>
-    <div id="confrecent" style="margin-top:8px;"></div>
-  </div>
-
-  <div class="panel" id="p-countdown">
-    <h2>Bot Status / Next Scan</h2>
-    <div class="big" id="countdown">--</div>
-    <div class="row"><span class="k">State</span><span id="cdstate">--</span></div>
-    <div class="row"><span class="k">Next scan</span><span id="nextscan" class="muted">--</span></div>
-    <div class="row"><span class="k">Last update</span><span id="lastupdate" class="muted">--</span></div>
-  </div>
-
-  <div class="panel" id="p-equitycurve" style="grid-column: span 2;">
-    <h2>Equity Curve</h2>
-    <canvas id="chart" width="600" height="140"></canvas>
-    <div id="chartempty" class="empty" style="display:none;">waiting for data</div>
-  </div>
-
-  <div class="panel" id="p-positions" style="grid-column: span 2;">
-    <h2>Active Positions</h2>
-    <div id="positions"></div>
-  </div>
-
-  <div class="panel" id="p-feed" style="grid-column: span 2;">
-    <h2>Trade Feed</h2>
-    <div class="feed" id="feed"></div>
-  </div>
-
-  <div class="panel" id="p-reports" style="grid-column: span 2;">
-    <h2>Reports</h2>
-    <div id="reports"></div>
+  <div class="card" id="cardConf">
+    <div class="card-title">Confidence Gate</div>
+    <div class="big-num mono" id="confGate" style="color:var(--gold);">--</div>
+    <div class="sub-val">minimum threshold</div>
+    <div class="conf-bars" id="confBars"></div>
+    <div class="sub-val muted" style="margin-top:4px;">Latest: <span id="confLatest">--</span></div>
   </div>
 </div>
 
-<div id="celebrate"><div>🎉 WINNING TRADE 🎉</div><div id="celebrate-detail" style="font-size:16px;color:var(--fg)"></div></div>
+<!-- ROW 3: SIGNATURE PANELS -->
+<div class="row-grid row-sig">
+  <div class="card">
+    <div class="card-title">Probability Engine</div>
+    <canvas id="latticeCanvas" class="chart-canvas" style="height:140px;margin-bottom:12px;"></canvas>
+    <div style="display:flex;gap:16px;font-size:11px;margin-bottom:12px;">
+      <span class="muted">Trades: <span class="mono" id="lattTrades">0</span></span>
+      <span class="muted">Green: <span class="mono green" id="lattGreen">0%</span></span>
+      <span class="muted">EV/trade: <span class="mono" id="lattEV">--</span></span>
+    </div>
+    <div class="card-title" style="margin-top:8px;">Equity Curve</div>
+    <canvas id="equityCanvas" class="chart-canvas"></canvas>
+    <div id="equityEmpty" class="empty-state" style="display:none;">Insufficient data — waiting for trades</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Neural Graph</div>
+    <canvas id="graphCanvas" class="graph-canvas"></canvas>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px;font-size:11px;">
+      <div><span class="muted">P(UP)</span> <span class="mono green" id="graphPup">--</span></div>
+      <div><span class="muted">P(DOWN)</span> <span class="mono rose" id="graphPdown">--</span></div>
+      <div><span class="muted">Signal</span> <span class="mono blue" id="graphSignal">--</span></div>
+      <div><span class="muted">Nodes</span> <span class="mono" id="graphNodes">--</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ROW 4: EXECUTION + COUNTDOWN -->
+<div class="row-grid row-exec">
+  <div class="card">
+    <div class="card-title">Execution Pipeline</div>
+    <div class="pipeline" id="pipeline">
+      <div class="pipe-step" data-step="scan">SCAN</div>
+      <span class="pipe-arrow">›</span>
+      <div class="pipe-step" data-step="analyze">ANALYZE</div>
+      <span class="pipe-arrow">›</span>
+      <div class="pipe-step" data-step="score">SCORE</div>
+      <span class="pipe-arrow">›</span>
+      <div class="pipe-step" data-step="size">SIZE</div>
+      <span class="pipe-arrow">›</span>
+      <div class="pipe-step" data-step="execute">EXECUTE</div>
+      <span class="pipe-arrow">›</span>
+      <div class="pipe-step" data-step="manage">MANAGE</div>
+    </div>
+  </div>
+  <div class="card" style="text-align:center;">
+    <div class="card-title">Next Scan Countdown</div>
+    <div class="cd-ring-wrap">
+      <svg width="80" height="80" viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r="34" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="4"/>
+        <circle id="cdRing" cx="40" cy="40" r="34" fill="none" stroke="var(--blue)" stroke-width="4"
+          stroke-dasharray="213.63" stroke-dashoffset="0" stroke-linecap="round"/>
+      </svg>
+      <div class="cd-center">
+        <span class="cd-secs mono" id="cdSecs">--</span>
+        <span class="cd-label" id="cdState">--</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ROW 5: DATA PANELS -->
+<div class="row-grid row-data">
+  <div class="card">
+    <div class="card-title">Active Positions</div>
+    <div id="positionsWrap"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Trade Feed</div>
+    <div class="feed-list" id="feedList"></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Reports</div>
+    <div id="reportsWrap"></div>
+  </div>
+</div>
+
+<!-- FOOTER -->
+<div class="footer">
+  <div class="footer-item">Last update: <span class="mono" id="footUpdate">--</span></div>
+  <div class="footer-item">Age: <span class="mono" id="footAge">--</span></div>
+  <div class="footer-item">Scan interval: 60s</div>
+  <div class="footer-item" id="footConn">--</div>
+</div>
+</div>
+
+<!-- CELEBRATION -->
+<div id="celebrate" class="celebrate-overlay">
+  <canvas id="confettiCanvas" style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none;"></canvas>
+  <div class="celebrate-card">
+    <div class="celebrate-title" id="celTitle">TROPHY UNLOCKED</div>
+    <div class="celebrate-amount mono" id="celAmount">+$0.00</div>
+    <div class="celebrate-sub" id="celSub"></div>
+  </div>
+</div>
 
 <script>
 "use strict";
-const MAX_RECONNECT_ATTEMPTS = 12;
-const MAX_RECONNECT_INTERVAL_MS = 5000;
+// ═══════════════════════════════════════════════════════════════════════
+// NEXUS DASHBOARD — Data Layer
+// ═══════════════════════════════════════════════════════════════════════
+const MAX_RECONNECT=12,RECONNECT_BASE=1000,MAX_FEED=50,MAX_CONF=20,MAX_LATTICE=40,MAX_GRAPH_NODES=18;
+const SCAN_INTERVAL=60;
 
-// Mirror of the backend plan_reconnects shape (bounded schedule).
-function planReconnects(intervalMs, maxAttempts, lastSnapshot) {
-  const capped = Math.max(0, Math.min(maxAttempts, MAX_RECONNECT_ATTEMPTS));
-  const delay = Math.min(intervalMs, MAX_RECONNECT_INTERVAL_MS);
-  const out = [];
-  for (let i = 1; i <= capped; i++) out.push({ attempt: i, delay, displayed_snapshot: lastSnapshot });
-  return out;
-}
+const S={
+  ready:false,snapshot:null,reconnects:0,sse:null,
+  seenCloses:new Set(),latticeDrops:[],animFrame:null,
+  confetti:[],celebrating:false
+};
 
-let lastSnapshot = null;
-let reconnectAttempts = 0;
-let seenClosedIds = new Set();
-let firstLoad = true;
+// Boot guard: celebrations only fire 5s after init
+setTimeout(()=>{S.ready=true;},5000);
 
-function money(v) {
-  if (v === null || v === undefined || typeof v !== "number") return "--";
-  return (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
-}
-function pct(v) {
-  if (v === null || v === undefined || typeof v !== "number") return "--";
-  return (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
-}
-function signClass(v) {
-  if (typeof v !== "number") return "muted";
-  return v > 0 ? "green" : v < 0 ? "red" : "neutral";
-}
-function setText(id, text, cls) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.textContent = text;
-  if (cls !== undefined) el.className = cls;
-}
+// ═══ UTILITIES ═══
+function $(id){return document.getElementById(id);}
+function money(v){if(v==null||typeof v!=='number')return'--';return(v<0?'-$':'$')+Math.abs(v).toFixed(2);}
+function pct(v){if(v==null||typeof v!=='number')return'--';return(v>=0?'+':'')+v.toFixed(2)+'%';}
+function cls(v){if(typeof v!=='number')return'muted';return v>0?'green':v<0?'rose':'muted';}
 
-function render(s) {
-  if (!s) return;
-  lastSnapshot = s;
+// ═══ CLOCK ═══
+setInterval(()=>{
+  const d=new Date();
+  $('clock').textContent=[d.getUTCHours(),d.getUTCMinutes(),d.getUTCSeconds()]
+    .map(n=>String(n).padStart(2,'0')).join(':');
+},1000);
+
+// ═══ BACKGROUND MESH ═══
+(function initMesh(){
+  const c=$('bgMesh'),ctx=c.getContext('2d');
+  let w,h;
+  function resize(){w=c.width=window.innerWidth;h=c.height=window.innerHeight;}
+  resize();window.addEventListener('resize',resize);
+  let t=0;
+  function draw(){
+    if(document.hidden)return;
+    t+=0.002;
+    ctx.clearRect(0,0,w,h);
+    const grd=ctx.createRadialGradient(w*.3+Math.sin(t)*100,h*.4+Math.cos(t*.7)*80,0,w*.5,h*.5,w*.7);
+    grd.addColorStop(0,'rgba(30,58,138,0.06)');
+    grd.addColorStop(0.5,'rgba(49,46,129,0.04)');
+    grd.addColorStop(1,'rgba(12,18,32,0)');
+    ctx.fillStyle=grd;ctx.fillRect(0,0,w,h);
+    const grd2=ctx.createRadialGradient(w*.7+Math.cos(t*1.3)*120,h*.6+Math.sin(t*.5)*100,0,w*.5,h*.5,w*.6);
+    grd2.addColorStop(0,'rgba(6,78,59,0.04)');
+    grd2.addColorStop(1,'rgba(12,18,32,0)');
+    ctx.fillStyle=grd2;ctx.fillRect(0,0,w,h);
+  }
+  function loop(){draw();requestAnimationFrame(loop);}
+  loop();
+})();
+
+// ═══ RENDER ═══
+function render(snap){
+  if(!snap)return;
+  S.snapshot=snap;
 
   // Mode badge
-  const mode = s.mode || "live";
-  const modeEl = document.getElementById("mode");
-  modeEl.textContent = mode; modeEl.className = "badge " + mode;
+  const mode=snap.mode||'paper';
+  const badge=$('modeBadge');
+  badge.textContent=mode.toUpperCase();
+  badge.className='mode-badge '+mode;
 
-  const st = (s.bot_status && s.bot_status.state) || "--";
-  setText("status", "● " + st, st === "bot_offline" ? "red" : st === "initializing" ? "warn" : "muted");
+  // Account ID
+  $('acctId').textContent=snap.connection?('Auth: '+(snap.connection.auth_status||'--')):'';
 
-  // Account
-  const a = s.account || {};
-  setText("equity", a.equity_available ? money(a.equity) : "waiting for data", a.equity_available ? "big" : "big muted");
-  setText("balance", a.balance_available ? money(a.balance) : "--");
-  setText("freemargin", a.free_margin_available ? money(a.free_margin) : "--");
-  setText("equitysrc", a.equity_source || "--", "muted");
+  // Tape
+  renderTape(snap);
 
-  // PnL
-  const p = s.pnl || {};
-  setText("dailypnl", p.daily_realized_available ? money(p.daily_realized) : "--", signClass(p.daily_realized));
-  setText("dailyret", p.daily_return_pct_available ? pct(p.daily_return_pct) : "--", signClass(p.daily_return_pct));
-  setText("cumpnl", money(p.cumulative_realized), signClass(p.cumulative_realized));
-  setText("unrealpnl", p.total_unrealized_available ? money(p.total_unrealized) : "--", signClass(p.total_unrealized));
+  // Hero equity
+  const acct=snap.account||{};
+  const eq=acct.equity_available?money(acct.equity):'Waiting...';
+  $('heroEquity').textContent=eq;
+  $('heroEquity').style.color=acct.equity_available?'var(--blue)':'var(--muted)';
+  const pnl=snap.pnl||{};
+  $('heroPnl').textContent=pnl.daily_realized_available?money(pnl.daily_realized):'--';
+  $('heroPnl').className=cls(pnl.daily_realized);
+  $('heroRet').textContent=pnl.daily_return_pct_available?pct(pnl.daily_return_pct):'--';
+  $('heroRet').className=cls(pnl.daily_return_pct);
+  $('heroSrc').textContent=acct.equity_source||'--';
 
   // Win stats
-  const w = s.win_stats || {};
-  setText("dailywr", w.daily_win_rate_available ? w.daily_win_rate.toFixed(1) + "%" : "N/A");
-  setText("adaptwr", w.adaptive_win_rate_available ? w.adaptive_win_rate.toFixed(1) + "%" : "N/A");
-  setText("wl", (w.wins ?? 0) + " / " + (w.losses ?? 0));
-  const streakTxt = w.win_streak > 0 ? "W" + w.win_streak : w.loss_streak > 0 ? "L" + w.loss_streak : "-";
-  setText("streak", streakTxt, w.win_streak > 0 ? "green" : w.loss_streak > 0 ? "red" : "neutral");
+  const ws=snap.win_stats||{};
+  const wr=ws.daily_win_rate_available?ws.daily_win_rate:null;
+  $('winPct').textContent=wr!=null?Math.round(wr)+'%':'--';
+  const circumf=175.93;
+  const offset=wr!=null?circumf*(1-wr/100):circumf;
+  $('winRing').style.strokeDashoffset=offset;
+  $('winWL').textContent=(ws.wins||0)+' W / '+(ws.losses||0)+' L';
+  const streak=ws.win_streak>0?'🔥 W'+ws.win_streak:ws.loss_streak>0?'L'+ws.loss_streak:'--';
+  $('winStreak').textContent=streak;
+  $('winStreak').className=ws.win_streak>0?'green':ws.loss_streak>0?'rose':'muted';
 
   // Confidence
-  const c = s.confidence || {};
-  setText("gate", c.gate_available ? c.gate.toFixed(1) + " / 10" : "unavailable");
-  document.getElementById("gatefill").style.width = (c.gate_available ? (c.gate / 10 * 100) : 0) + "%";
-  const cr = document.getElementById("confrecent");
-  cr.innerHTML = "";
-  (c.recent || []).slice(0, 5).forEach(r => {
-    const div = document.createElement("div");
-    div.className = "row";
-    const cls = r.classification === "met_gate" ? "green" : r.classification === "near_miss" ? "red" : "muted";
-    div.innerHTML = `<span class="k">${r.symbol || "--"}</span><span class="${cls}">${(r.value ?? 0).toFixed(1)} · ${r.classification || "unknown"}</span>`;
-    cr.appendChild(div);
-  });
-  if (!(c.recent || []).length) cr.innerHTML = '<div class="empty">no confidence data</div>';
+  const conf=snap.confidence||{};
+  $('confGate').textContent=conf.gate_available?(conf.gate.toFixed(1)+' / 10'):'N/A';
+  renderConfBars(conf.recent||[]);
+  const latest=(conf.recent||[])[0];
+  $('confLatest').textContent=latest?(latest.value.toFixed(1)+' · '+(latest.classification||'')):'--';
+  $('confLatest').className=latest&&latest.classification==='met_gate'?'green':latest&&latest.classification==='near_miss'?'rose':'muted';
 
-  // Countdown
-  const cd = s.countdown || {};
-  setText("countdown", cd.seconds_remaining !== null && cd.seconds_remaining !== undefined ? cd.seconds_remaining + "s" : "--", "big");
-  setText("cdstate", cd.state || "--", cd.state === "locked" ? "red" : "muted");
-  setText("nextscan", cd.next_scan_utc ? cd.next_scan_utc.slice(11, 19) + " UTC" : "--", "muted");
-  setText("lastupdate", s.last_update_utc ? s.last_update_utc.slice(11, 19) + " UTC" : "no data", "muted");
+  // Lattice
+  renderLatticeData(snap);
 
   // Equity curve
-  drawChart((s.equity_curve && s.equity_curve.points) || []);
+  drawEquityCurve((snap.equity_curve&&snap.equity_curve.points)||[]);
+
+  // Graph
+  renderGraphStats(snap);
+
+  // Pipeline
+  renderPipeline(snap.bot_status);
+
+  // Countdown
+  renderCountdown(snap.countdown);
 
   // Positions
-  renderPositions(s.positions || []);
+  renderPositions(snap.positions||[]);
 
   // Feed
-  renderFeed(s.feed || []);
+  renderFeed(snap.feed||[]);
 
   // Reports
-  renderReports(s.reports || {});
+  renderReports(snap.reports||{});
 
-  // Celebration on real winning close (guarded)
-  maybeCelebrate(s.feed || []);
-  firstLoad = false;
+  // Footer
+  $('footUpdate').textContent=snap.last_update_utc?(snap.last_update_utc.slice(11,19)+' UTC'):'--';
+  $('footAge').textContent=snap.data_age_seconds!=null?(snap.data_age_seconds+'s'):'--';
+  const conn=snap.connection||{};
+  $('footConn').textContent='Files: '+(conn.file_status||'--')+' | API: '+(conn.api_status||'--');
+
+  // Celebrations
+  maybeCelebrate(snap);
 }
 
-function renderPositions(positions) {
-  const el = document.getElementById("positions");
-  if (!positions.length) { el.innerHTML = '<div class="empty">no open positions</div>'; return; }
-  let html = "<table><tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>R:R</th><th>uPnL</th><th>→SL</th><th>→TP</th></tr>";
-  positions.forEach(pos => {
-    const up = pos.unrealized_pnl_available ? money(pos.unrealized_pnl) : "--";
-    const upc = pos.unrealized_pnl_available ? signClass(pos.unrealized_pnl) : "muted";
-    html += `<tr><td>${pos.symbol || "--"}</td><td>${pos.direction || "--"}</td>` +
-      `<td>${fmt(pos.entry_price)}</td><td>${fmt(pos.stop_loss)}</td><td>${fmt(pos.take_profit)}</td>` +
-      `<td>${fmt(pos.risk_reward_ratio)}</td><td class="${upc}">${up}</td>` +
-      `<td>${pos.distances_available ? fmt(pos.distance_to_sl) : "--"}</td>` +
-      `<td>${pos.distances_available ? fmt(pos.distance_to_tp) : "--"}</td></tr>`;
+function renderTape(s){
+  const acct=s.account||{},pnl=s.pnl||{},ws=s.win_stats||{};
+  $('tapeEquity').textContent=acct.equity_available?money(acct.equity):'--';
+  $('tapePnl').textContent=pnl.daily_realized_available?money(pnl.daily_realized):'--';
+  $('tapeWr').textContent=ws.daily_win_rate_available?(ws.daily_win_rate.toFixed(0)+'%'):'--';
+  const str=ws.win_streak>0?'W'+ws.win_streak:ws.loss_streak>0?'L'+ws.loss_streak:'--';
+  $('tapeStreak').textContent=str;
+  $('tapeSession').textContent=pnl.cumulative_realized!=null?money(pnl.cumulative_realized):'--';
+}
+
+function renderConfBars(recent){
+  const wrap=$('confBars');wrap.innerHTML='';
+  const items=recent.slice(0,MAX_CONF);
+  if(!items.length){wrap.innerHTML='<span class="empty-state" style="font-size:10px;">No data</span>';return;}
+  const maxVal=Math.max(...items.map(r=>r.value||0),1);
+  items.forEach((r,i)=>{
+    const bar=document.createElement('div');
+    bar.className='conf-bar '+(r.classification==='met_gate'?'met':'miss')+(i===0?' latest':'');
+    bar.style.height=Math.max(4,((r.value||0)/maxVal)*100)+'%';
+    bar.title=(r.symbol||'')+': '+(r.value||0).toFixed(1);
+    wrap.appendChild(bar);
   });
-  el.innerHTML = html + "</table>";
-}
-function fmt(v) { return typeof v === "number" ? v.toFixed(2) : "--"; }
-
-function renderFeed(feed) {
-  const el = document.getElementById("feed");
-  if (!feed.length) { el.innerHTML = '<div class="empty">waiting for data / bot offline</div>'; return; }
-  el.innerHTML = feed.map(f => {
-    const t = (f.timestamp_utc || "").slice(11, 19);
-    const conf = (typeof f.confidence === "number") ? ` · ${f.confidence.toFixed(1)}/10` : "";
-    const pnl = (typeof f.pnl === "number") ? ` · ${money(f.pnl)}` : "";
-    return `<div class="item"><span class="muted">${t}</span>` +
-      `<span class="tag ${f.action}">${f.action || "?"}</span>` +
-      `<span>${f.symbol || ""} ${f.direction || ""}${conf}${pnl}</span></div>`;
-  }).join("");
 }
 
-function renderReports(reports) {
-  const el = document.getElementById("reports");
-  const parts = [];
-  ["daily", "weekly", "monthly"].forEach(k => {
-    const r = reports[k];
-    if (!r) { parts.push(`<div class="row"><span class="k">${k}</span><span class="muted">no report</span></div>`); return; }
-    const cls = signClass(r.pnl_usd);
-    parts.push(`<div class="row"><span class="k">${k} (${r.date || r.week || r.month || ""})</span>` +
-      `<span class="${cls}">${money(r.pnl_usd)} · ${pct(r.return_pct)}</span></div>`);
+// ═══ LATTICE (Galton Board) ═══
+function renderLatticeData(snap){
+  const feed=snap.feed||[];
+  const closes=feed.filter(f=>f.action==='CLOSE'&&typeof f.pnl==='number');
+  $('lattTrades').textContent=closes.length;
+  const wins=closes.filter(c=>c.pnl>0).length;
+  $('lattGreen').textContent=closes.length?(Math.round(wins/closes.length*100)+'%'):'0%';
+  const totalPnl=closes.reduce((s,c)=>s+c.pnl,0);
+  $('lattEV').textContent=closes.length?money(totalPnl/closes.length):'--';
+
+  // Add drops for new closes
+  closes.slice(0,MAX_LATTICE).forEach(c=>{
+    const id=c.timestamp_utc+c.symbol;
+    if(!S.seenCloses.has(id)){
+      S.seenCloses.add(id);
+      S.latticeDrops.push({pnl:c.pnl,x:0.5,y:0,vy:0,landed:false,t:0});
+    }
   });
-  const wk = reports.weekly;
-  if (wk && Array.isArray(wk.improvements) && wk.improvements.length) {
-    parts.push('<div class="k" style="margin-top:8px;">What to improve (weekly):</div><ul class="improve">' +
-      wk.improvements.map(s => `<li>${escapeHtml(s)}</li>`).join("") + "</ul>");
-  }
-  el.innerHTML = parts.join("");
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
-function maybeCelebrate(feed) {
-  if (firstLoad) { // seed without celebrating on initial load
-    feed.forEach(f => { if (f.action === "CLOSE" && f.is_win === true) seenClosedIds.add(f.timestamp_utc + f.symbol); });
-    return;
+// ═══ EQUITY CURVE ═══
+function drawEquityCurve(points){
+  const canvas=$('equityCanvas'),empty=$('equityEmpty');
+  if(!points||points.length<2){
+    canvas.style.display='none';empty.style.display='block';return;
   }
-  for (const f of feed) {
-    if (f.action === "CLOSE" && f.is_win === true) {
-      const id = f.timestamp_utc + f.symbol;
-      if (!seenClosedIds.has(id)) {
-        seenClosedIds.add(id);
-        showCelebrate(f);
+  canvas.style.display='block';empty.style.display='none';
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width=canvas.offsetWidth*2,H=canvas.height=320;
+  canvas.style.height='160px';
+  ctx.clearRect(0,0,W,H);
+  const ys=points.map(p=>p.equity);
+  const min=Math.min(...ys),max=Math.max(...ys),range=(max-min)||1;
+  const pad=20;
+
+  // Area fill
+  ctx.beginPath();
+  points.forEach((p,i)=>{
+    const x=pad+(i/(points.length-1))*(W-2*pad);
+    const y=H-pad-((p.equity-min)/range)*(H-2*pad);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  const lastX=pad+((points.length-1)/(points.length-1))*(W-2*pad);
+  ctx.lineTo(lastX,H-pad);ctx.lineTo(pad,H-pad);ctx.closePath();
+  const grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'rgba(59,130,246,0.15)');
+  grad.addColorStop(1,'rgba(59,130,246,0)');
+  ctx.fillStyle=grad;ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  points.forEach((p,i)=>{
+    const x=pad+(i/(points.length-1))*(W-2*pad);
+    const y=H-pad-((p.equity-min)/range)*(H-2*pad);
+    i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+  });
+  ctx.strokeStyle='#3b82f6';ctx.lineWidth=2.5;
+  ctx.shadowColor='rgba(59,130,246,0.4)';ctx.shadowBlur=8;
+  ctx.stroke();ctx.shadowBlur=0;
+
+  // Labels
+  ctx.fillStyle='#94a3b8';ctx.font='18px system-ui';
+  ctx.fillText('$'+max.toFixed(0),pad,18);
+  ctx.fillText('$'+min.toFixed(0),pad,H-4);
+}
+
+// ═══ PIPELINE ═══
+function renderPipeline(botStatus){
+  const state=(botStatus&&botStatus.state)||'';
+  const steps=document.querySelectorAll('.pipe-step');
+  let activeStep='';
+  if(state==='scanning'||state==='initializing')activeStep='scan';
+  else if(state==='analyzing')activeStep='analyze';
+  else if(state==='scoring')activeStep='score';
+  else if(state==='sizing')activeStep='size';
+  else if(state==='executing')activeStep='execute';
+  else if(state==='managing'||state==='locked')activeStep='manage';
+  // If a position is open, light up MANAGE
+  if(S.snapshot&&S.snapshot.positions&&S.snapshot.positions.length>0)activeStep='manage';
+  steps.forEach(s=>{
+    s.classList.toggle('active',s.dataset.step===activeStep);
+  });
+}
+
+// ═══ COUNTDOWN ═══
+function renderCountdown(cd){
+  if(!cd){$('cdSecs').textContent='--';$('cdState').textContent='--';return;}
+  const secs=cd.seconds_remaining;
+  $('cdSecs').textContent=secs!=null?secs+'s':'--';
+  const stateMap={scanning:'SCANNING',locked:'LOCKED',paused:'PAUSED',bot_offline:'OFFLINE'};
+  const label=stateMap[cd.state]||(secs!=null&&secs<=0?'DUE':'SCANNING');
+  $('cdState').textContent=label;
+  // Ring progress
+  const circumf=213.63;
+  const progress=secs!=null?Math.max(0,Math.min(1,secs/SCAN_INTERVAL)):0;
+  $('cdRing').style.strokeDashoffset=circumf*(1-progress);
+}
+
+// ═══ POSITIONS ═══
+function renderPositions(positions){
+  const wrap=$('positionsWrap');
+  if(!positions.length){wrap.innerHTML='<div class="empty-state">No open positions</div>';return;}
+  let html='<table class="pos-table"><tr><th>SYM</th><th>SIDE</th><th>ENTRY</th><th>SL</th><th>TP</th><th>uPNL</th><th>→SL</th><th>→TP</th></tr>';
+  positions.forEach(p=>{
+    const dir=p.direction||'--';
+    const dirCls=dir.toLowerCase()==='buy'?'blue':'rose';
+    const upnl=p.unrealized_pnl_available?money(p.unrealized_pnl):'--';
+    const upnlCls=p.unrealized_pnl_available?cls(p.unrealized_pnl):'muted';
+    const be=p.breakeven_set?'<span class="blue" style="font-size:9px;"> BE</span>':'';
+    html+='<tr><td>'+(p.symbol||'--')+be+'</td><td class="'+dirCls+'">'+dir+'</td>'+
+      '<td class="mono">'+fmt(p.entry_price)+'</td><td class="mono">'+fmt(p.stop_loss)+'</td>'+
+      '<td class="mono">'+fmt(p.take_profit)+'</td>'+
+      '<td class="mono '+upnlCls+'">'+upnl+'</td>'+
+      '<td class="mono">'+(p.distances_available?fmt(p.distance_to_sl):'--')+'</td>'+
+      '<td class="mono">'+(p.distances_available?fmt(p.distance_to_tp):'--')+'</td></tr>';
+  });
+  wrap.innerHTML=html+'</table>';
+}
+function fmt(v){return typeof v==='number'?v.toFixed(2):'--';}
+
+// ═══ FEED ═══
+function renderFeed(feed){
+  const el=$('feedList');
+  if(!feed.length){el.innerHTML='<div class="empty-state">Waiting for activity...</div>';return;}
+  const items=feed.slice(0,MAX_FEED);
+  el.innerHTML=items.map(f=>{
+    const t=(f.timestamp_utc||'').slice(11,19);
+    const action=f.action||f.kind||'?';
+    const conf=typeof f.confidence==='number'?' · '+f.confidence.toFixed(1):'';
+    const pnlStr=typeof f.pnl==='number'?' · <span class="'+cls(f.pnl)+'">'+money(f.pnl)+'</span>':'';
+    return'<div class="feed-item"><span class="feed-time mono">'+t+'</span>'+
+      '<span class="action-pill '+action+'">'+action+'</span>'+
+      '<span>'+(f.symbol||'')+(f.direction?' '+f.direction:'')+conf+pnlStr+'</span></div>';
+  }).join('');
+}
+
+// ═══ REPORTS ═══
+function renderReports(reports){
+  const wrap=$('reportsWrap');
+  if(!reports.daily&&!reports.weekly&&!reports.monthly){
+    wrap.innerHTML='<div class="empty-state">No reports yet</div>';return;
+  }
+  let html='';
+  ['daily','weekly','monthly'].forEach(k=>{
+    const r=reports[k];
+    if(!r)return;
+    const c=cls(r.pnl_usd);
+    html+='<div class="report-section"><div class="report-header">'+k+' ('+(r.date||r.week||r.month||'')+')</div>'+
+      '<div class="report-row"><span>P&L</span><span class="mono '+c+'">'+money(r.pnl_usd)+'</span></div>'+
+      '<div class="report-row"><span>Return</span><span class="mono '+c+'">'+pct(r.return_pct)+'</span></div></div>';
+  });
+  const wk=reports.weekly;
+  if(wk&&Array.isArray(wk.improvements)&&wk.improvements.length){
+    html+='<div class="report-section"><div class="report-header">What to improve</div><ul class="improve-list">';
+    wk.improvements.forEach(s=>{html+='<li>'+escHtml(s)+'</li>';});
+    html+='</ul></div>';
+  }
+  wrap.innerHTML=html;
+}
+function escHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+// ═══ NEURAL GRAPH ═══
+function renderGraphStats(snap){
+  const conf=snap.confidence||{};
+  const latest=(conf.recent||[])[0];
+  const confVal=latest?latest.value:5;
+  const pUp=confVal>5?Math.min(95,50+confVal*4.5):Math.max(5,50-((10-confVal)*4.5));
+  $('graphPup').textContent=pUp.toFixed(0)+'%';
+  $('graphPdown').textContent=(100-pUp).toFixed(0)+'%';
+  const signal=confVal!=null?(confVal/10*100).toFixed(0)+'%':'--';
+  $('graphSignal').textContent=signal;
+  $('graphNodes').textContent=MAX_GRAPH_NODES+' active';
+}
+
+// ═══ CANVAS ANIMATIONS (single rAF loop) ═══
+const graphNodes=[];
+const hubNames=['TREND','MOMENTUM','CONFIDENCE'];
+const satNames=['RSI','EMA','VOL','ATR','MACD','BB','ADX','OBV','VWAP','STOCH','CCI','MFI','SAR','ICHIMOKU','PIVOT'];
+
+function initGraphNodes(){
+  // 3 hub nodes
+  const hubs=[{x:0.25,y:0.35},{x:0.75,y:0.35},{x:0.5,y:0.7}];
+  hubs.forEach((h,i)=>{
+    graphNodes.push({x:h.x,y:h.y,vx:0,vy:0,r:18,hub:true,label:hubNames[i],pulse:Math.random()*6.28});
+  });
+  // Satellite nodes
+  satNames.forEach((name,i)=>{
+    const angle=(i/satNames.length)*Math.PI*2;
+    const dist=0.25+Math.random()*0.15;
+    const cx=0.5+Math.cos(angle)*dist;
+    const cy=0.5+Math.sin(angle)*dist;
+    graphNodes.push({x:cx,y:cy,vx:(Math.random()-0.5)*0.0003,vy:(Math.random()-0.5)*0.0003,r:6,hub:false,label:name,pulse:Math.random()*6.28});
+  });
+}
+initGraphNodes();
+
+function animateAll(time){
+  if(document.hidden){S.animFrame=requestAnimationFrame(animateAll);return;}
+  drawLattice(time);
+  drawGraph(time);
+  S.animFrame=requestAnimationFrame(animateAll);
+}
+
+function drawLattice(time){
+  const canvas=$('latticeCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width=canvas.offsetWidth*2;
+  const H=canvas.height=280;
+  canvas.style.height='140px';
+  ctx.clearRect(0,0,W,H);
+
+  // Histogram from closed trades
+  const closes=(S.snapshot&&S.snapshot.feed||[]).filter(f=>f.action==='CLOSE'&&typeof f.pnl==='number');
+  if(!closes.length){
+    ctx.fillStyle='#94a3b8';ctx.font='22px system-ui';ctx.textAlign='center';
+    ctx.fillText('Waiting for trades...',W/2,H/2);return;
+  }
+  const center=W/2;
+  const maxPnl=Math.max(...closes.map(c=>Math.abs(c.pnl)),1);
+  const barH=Math.max(8,Math.min(20,(H-40)/closes.length));
+  const startY=20;
+
+  closes.slice(0,MAX_LATTICE).forEach((c,i)=>{
+    const barW=Math.abs(c.pnl)/maxPnl*(W/2-40);
+    const y=startY+i*(barH+2);
+    if(y+barH>H-10)return;
+    const x=c.pnl>=0?center:center-barW;
+    const color=c.pnl>=0?'rgba(16,185,129,0.6)':'rgba(244,63,94,0.5)';
+    ctx.fillStyle=color;
+    ctx.beginPath();
+    if(ctx.roundRect){ctx.roundRect(x,y,barW,barH-1,[3]);}
+    else{ctx.rect(x,y,barW,barH-1);}
+    ctx.fill();
+  });
+
+  // Center line
+  ctx.strokeStyle='rgba(148,163,184,0.3)';ctx.lineWidth=1;
+  ctx.setLineDash([4,4]);
+  ctx.beginPath();ctx.moveTo(center,10);ctx.lineTo(center,H-10);ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Animated dots
+  const t=time*0.001;
+  S.latticeDrops.forEach(d=>{
+    if(!d.landed){
+      d.t+=0.02;
+      d.y=Math.min(0.9,d.t);
+      d.x=0.5+(d.pnl>0?1:-1)*Math.abs(d.pnl)/maxPnl*0.4*(d.y);
+      if(d.y>=0.9)d.landed=true;
+    }
+    const dx=d.x*W,dy=d.y*H;
+    ctx.beginPath();ctx.arc(dx,dy,4,0,Math.PI*2);
+    ctx.fillStyle=d.pnl>=0?'var(--green)':'var(--rose)';ctx.fill();
+  });
+  // Cap drops
+  if(S.latticeDrops.length>MAX_LATTICE)S.latticeDrops=S.latticeDrops.slice(-MAX_LATTICE);
+}
+
+function drawGraph(time){
+  const canvas=$('graphCanvas');
+  if(!canvas)return;
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width=canvas.offsetWidth*2;
+  const H=canvas.height=560;
+  canvas.style.height='280px';
+  ctx.clearRect(0,0,W,H);
+  const t=time*0.001;
+
+  // Update positions
+  graphNodes.forEach(n=>{
+    if(!n.hub){
+      n.x+=n.vx;n.y+=n.vy;
+      n.pulse+=0.02;
+      // Bounce
+      if(n.x<0.05||n.x>0.95)n.vx*=-1;
+      if(n.y<0.05||n.y>0.95)n.vy*=-1;
+      // Gentle drift
+      n.vx+=(Math.random()-0.5)*0.00005;
+      n.vy+=(Math.random()-0.5)*0.00005;
+      n.vx=Math.max(-0.001,Math.min(0.001,n.vx));
+      n.vy=Math.max(-0.001,Math.min(0.001,n.vy));
+    }
+  });
+
+  // Draw connections
+  const hubs=graphNodes.filter(n=>n.hub);
+  const sats=graphNodes.filter(n=>!n.hub);
+  sats.forEach((sat,i)=>{
+    const hub=hubs[i%3];
+    const sx=sat.x*W,sy=sat.y*H,hx=hub.x*W,hy=hub.y*H;
+    const pulse=0.3+0.3*Math.sin(t+sat.pulse);
+    ctx.strokeStyle='rgba(59,130,246,'+pulse+')';
+    ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(hx,hy);ctx.stroke();
+  });
+
+  // Hub-to-hub connections
+  for(let i=0;i<hubs.length;i++){
+    const a=hubs[i],b=hubs[(i+1)%hubs.length];
+    const pulse=0.2+0.2*Math.sin(t*0.7+i);
+    ctx.strokeStyle='rgba(245,158,11,'+pulse+')';ctx.lineWidth=2;
+    ctx.beginPath();ctx.moveTo(a.x*W,a.y*H);ctx.lineTo(b.x*W,b.y*H);ctx.stroke();
+  }
+
+  // Draw nodes
+  graphNodes.forEach(n=>{
+    const x=n.x*W,y=n.y*H;
+    const pulse=n.hub?1:0.6+0.4*Math.sin(t*2+n.pulse);
+
+    // Glow
+    if(n.hub){
+      ctx.shadowColor='rgba(59,130,246,0.4)';ctx.shadowBlur=15;
+    }
+    ctx.beginPath();ctx.arc(x,y,n.r*(n.hub?2:1),0,Math.PI*2);
+    ctx.fillStyle=n.hub?'rgba(59,130,246,'+pulse*0.3+')':'rgba(148,163,184,'+pulse*0.15+')';
+    ctx.fill();
+    ctx.strokeStyle=n.hub?'rgba(59,130,246,'+pulse+')':'rgba(148,163,184,'+pulse*0.5+')';
+    ctx.lineWidth=n.hub?2:1;ctx.stroke();
+    ctx.shadowBlur=0;
+
+    // Label
+    ctx.fillStyle=n.hub?'rgba(226,232,240,0.9)':'rgba(148,163,184,0.7)';
+    ctx.font=(n.hub?'bold 20px':'11px')+' system-ui';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(n.label,x,y+(n.hub?0:n.r+12));
+  });
+}
+
+// ═══ CELEBRATION ═══
+function maybeCelebrate(snap){
+  if(!S.ready)return;
+  const feed=snap.feed||[];
+  for(const f of feed){
+    if(f.action==='CLOSE'&&f.is_win===true){
+      const id=(f.timestamp_utc||'')+f.symbol;
+      if(!S.seenCloses.has(id)){
+        S.seenCloses.add(id);
+        // Fire if pnl > 150 or streak >= 3
+        const ws=snap.win_stats||{};
+        if((typeof f.pnl==='number'&&f.pnl>150)||(ws.win_streak>=3)){
+          triggerCelebration(f,ws);
+        }
       }
     }
   }
-}
-function showCelebrate(f) {
-  const el = document.getElementById("celebrate");
-  document.getElementById("celebrate-detail").textContent =
-    `${f.symbol} ${typeof f.pnl === "number" ? money(f.pnl) : ""}`;
-  el.style.display = "flex";
-  // Clear after animation completes to free DOM resources
-  setTimeout(() => { el.style.display = "none"; }, 3500);
+  // Seed on first load
+  if(!S._feedSeeded){
+    S._feedSeeded=true;
+    feed.forEach(f=>{if(f.action==='CLOSE')S.seenCloses.add((f.timestamp_utc||'')+f.symbol);});
+  }
 }
 
-function drawChart(points) {
-  const canvas = document.getElementById("chart");
-  const empty = document.getElementById("chartempty");
-  const ctx = canvas.getContext("2d");
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-  if (!points || points.length < 2) { empty.style.display = "block"; canvas.style.display = "none"; return; }
-  empty.style.display = "none"; canvas.style.display = "block";
-  const ys = points.map(p => p.equity);
-  const min = Math.min(...ys), max = Math.max(...ys), range = (max - min) || 1;
-  const pad = 8;
-  ctx.strokeStyle = "#f5a623"; ctx.lineWidth = 1.5; ctx.beginPath();
-  points.forEach((p, i) => {
-    const x = pad + (i / (points.length - 1)) * (W - 2 * pad);
-    const y = H - pad - ((p.equity - min) / range) * (H - 2 * pad);
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-  ctx.fillStyle = "#6b7688"; ctx.font = "10px monospace";
-  ctx.fillText(max.toFixed(2), 2, 10);
-  ctx.fillText(min.toFixed(2), 2, H - 2);
+function triggerCelebration(f,ws){
+  if(S.celebrating)return;
+  S.celebrating=true;
+  const el=$('celebrate');
+  $('celTitle').textContent=ws.win_streak>=3?'🏆 STREAK x'+ws.win_streak:'🏆 TROPHY UNLOCKED';
+  $('celAmount').textContent=typeof f.pnl==='number'?'+'+money(f.pnl).replace('-$','$'):'WIN';
+  $('celSub').textContent=(f.symbol||'')+' '+(f.direction||'');
+  el.classList.add('show');
+  launchConfetti();
+  setTimeout(()=>{el.classList.remove('show');S.celebrating=false;},4000);
 }
 
-// UTC clock
-setInterval(() => {
-  const d = new Date();
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  const ss = String(d.getUTCSeconds()).padStart(2, "0");
-  document.getElementById("clock").textContent = `${hh}:${mm}:${ss} UTC`;
-}, 1000);
-
-// --- data flow: fetch snapshot then subscribe to SSE with bounded reconnect ---
-async function loadInitial() {
-  try {
-    const res = await fetch("/api/snapshot");
-    if (res.ok) render(await res.json());
-  } catch (e) { /* offline */ }
-  connectStream();
+function launchConfetti(){
+  const canvas=$('confettiCanvas');
+  const ctx=canvas.getContext('2d');
+  canvas.width=window.innerWidth*2;canvas.height=window.innerHeight*2;
+  const colors=['#3b82f6','#f59e0b','#10b981','#e2e8f0'];
+  const particles=[];
+  for(let i=0;i<80;i++){
+    particles.push({
+      x:canvas.width/2+(Math.random()-0.5)*200,
+      y:canvas.height/2-100,
+      vx:(Math.random()-0.5)*12,
+      vy:-(Math.random()*8+4),
+      size:Math.random()*6+3,
+      color:colors[Math.floor(Math.random()*colors.length)],
+      rot:Math.random()*360,
+      rv:(Math.random()-0.5)*10
+    });
+  }
+  let frames=0;
+  function animConfetti(){
+    if(frames++>120){ctx.clearRect(0,0,canvas.width,canvas.height);return;}
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    particles.forEach(p=>{
+      p.x+=p.vx;p.y+=p.vy;p.vy+=0.3;p.rot+=p.rv;
+      ctx.save();ctx.translate(p.x,p.y);ctx.rotate(p.rot*Math.PI/180);
+      ctx.fillStyle=p.color;ctx.fillRect(-p.size/2,-p.size/2,p.size,p.size*0.6);
+      ctx.restore();
+    });
+    requestAnimationFrame(animConfetti);
+  }
+  animConfetti();
 }
 
-function connectStream() {
-  const es = new EventSource("/api/stream");
-  es.addEventListener("snapshot", ev => {
-    reconnectAttempts = 0;
-    setConn("ok", "live");
-    try { render(JSON.parse(ev.data)); } catch (e) {}
-  });
-  es.onopen = () => { reconnectAttempts = 0; setConn("ok", "live"); };
-  es.onerror = () => {
-    es.close();
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-      setConn("err", "disconnected");
-      return;
+// ═══ DATA FLOW ═══
+async function loadInitial(){
+  try{
+    const res=await fetch('/api/snapshot');
+    if(res.ok){
+      const data=await res.json();
+      render(data);
+      setConn('ok');
     }
-    reconnectAttempts++;
-    const schedule = planReconnects(reconnectAttempts * 1000, MAX_RECONNECT_ATTEMPTS, lastSnapshot);
-    const delay = schedule.length ? schedule[0].delay : MAX_RECONNECT_INTERVAL_MS;
-    setConn("warn", `reconnecting ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
-    setTimeout(connectStream, delay); // keep displaying lastSnapshot throughout
+  }catch(e){setConn('err');}
+  try{
+    const res=await fetch('/api/reports');
+    if(res.ok){
+      const reports=await res.json();
+      if(S.snapshot){S.snapshot.reports=reports;renderReports(reports);}
+    }
+  }catch(e){}
+  connectSSE();
+}
+
+function connectSSE(){
+  if(S.sse){try{S.sse.close();}catch(e){}}
+  const es=new EventSource('/api/stream');
+  S.sse=es;
+  es.addEventListener('snapshot',ev=>{
+    S.reconnects=0;setConn('ok');
+    try{render(JSON.parse(ev.data));}catch(e){}
+  });
+  es.onopen=()=>{S.reconnects=0;setConn('ok');};
+  es.onerror=()=>{
+    es.close();
+    if(S.reconnects>=MAX_RECONNECT){setConn('err');return;}
+    S.reconnects++;
+    setConn('warn');
+    const delay=Math.min(S.reconnects*RECONNECT_BASE,5000);
+    setTimeout(connectSSE,delay);
   };
 }
-function setConn(cls, text) {
-  const el = document.getElementById("conn");
-  el.className = cls; el.textContent = text;
+
+function setConn(state){
+  const dot=$('connDot');
+  dot.className='conn-dot '+state;
+  dot.title=state==='ok'?'Connected':state==='warn'?'Reconnecting...':'Disconnected';
 }
 
+// ═══ INIT ═══
+// Seed celebration tracking on first render
+S._feedSeeded=false;
+
+// Size canvases once + on resize
+function sizeCanvases(){
+  // Canvases auto-size in the rAF loop via offsetWidth
+}
+window.addEventListener('resize',sizeCanvases);
+sizeCanvases();
+
+// Start animation loop
+S.animFrame=requestAnimationFrame(animateAll);
+
+// Pause when hidden
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){
+    if(S.animFrame){cancelAnimationFrame(S.animFrame);S.animFrame=null;}
+  }else{
+    if(!S.animFrame)S.animFrame=requestAnimationFrame(animateAll);
+  }
+});
+
+// Boot
 loadInitial();
 </script>
 </body>
