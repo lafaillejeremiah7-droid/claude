@@ -56,12 +56,23 @@ tradelocker_bot/
 │   ├── risk_management.py     # Position sizing & risk limits
 │   ├── session_filter.py      # Trading session & news filter
 │   └── trade_manager.py       # Position lifecycle management
+│   ├── reporting.py           # Performance reporting engine (daily/weekly/monthly)
 ├── logs/                      # Daily log files & stats
 │   ├── bot_YYYY-MM-DD.log
 │   ├── daily_stats.json
-│   └── active_positions.json
-└── journal/                   # Trade journal (JSONL per day)
-    └── journal_YYYY-MM-DD.jsonl
+│   ├── active_positions.json
+│   ├── adaptive_config.json
+│   ├── trade_features.jsonl
+│   └── reports/               # Machine-readable performance reports (see below)
+│       ├── daily_YYYY-MM-DD.json
+│       ├── weekly_YYYY-Www.json
+│       ├── monthly_YYYY-MM.json
+│       ├── history.jsonl
+│       └── .report_state.json
+├── journal/                   # Trade journal (JSONL per day)
+│   └── journal_YYYY-MM-DD.jsonl
+└── tests/                     # Pytest suite
+    └── test_reporting.py
 ```
 
 ---
@@ -232,6 +243,92 @@ Every trade action is logged to `journal/journal_YYYY-MM-DD.jsonl`:
 - Exit details with P&L and R-multiple
 
 Review these regularly to assess strategy performance.
+
+---
+
+## Performance Reports
+
+The bot includes a **performance reporting engine** (`modules/reporting.py`,
+`PerformanceReporter`) that produces both human-readable log summaries and
+machine-readable JSON files. All times are **UTC**.
+
+Reports are emitted automatically on time-boundary rollovers. Once per scan
+cycle the bot calls `reporter.maybe_emit(now_utc)`, which detects whether a
+day, week, or month has rolled over since the last report and emits whatever is
+due. Detection is robust to the bot being offline across a boundary — the
+pending report fires on the next start. The last-reported periods are tracked
+in `logs/reports/.report_state.json`, so no report is ever emitted twice.
+
+The reporter is **read-mostly**: it reads the bot's existing state
+(`daily_stats.json` / weekly stats, `adaptive_config.json`,
+`trade_features.jsonl`, and the per-day `journal/*.jsonl` files) and only ever
+**writes inside `logs/reports/`**. It never overwrites the bot's live state.
+
+### What is produced
+
+| Report | Trigger | Contents |
+|---|---|---|
+| **Daily** | UTC day rollover | P&L ($ and %), trades taken, W/L, win rate, best & worst trade, average R |
+| **Weekly** | UTC (ISO) week rollover | Weekly P&L ($ and %), total trades, win rate, average R, max drawdown, plus a **"What to improve"** self-adaptation section |
+| **Monthly** | UTC month rollover | Monthly P&L ($ and %), total trades, win rate, best & worst day |
+
+Example daily log line:
+
+```
+=== DAILY REPORT 2024-06-10 UTC ===  P&L: +$142.30 (+1.42%) | 2 trades | 1W/1L (50%) | Best +$210 | Worst -$68 | Avg R 0.34
+```
+
+### "What to improve" (weekly self-adaptation insight)
+
+The weekly report derives concrete suggestions from the adaptive engine data
+and the week's trades — nothing is hard-coded. Insights only surface when the
+sample size is meaningful. Examples of the kinds of bullets generated:
+
+```
+IMPROVE: - Win rate in 08:00-09:00 UTC is 22% (12 trades) - consider avoid_hours.
+IMPROVE: - 'doji' pattern avg R -0.4 over 9 trades (win rate 33%) - down-weight.
+IMPROVE: - Low-confidence trades [8.0-8.5) win 30% vs 80% for [9.0-10.0) - consider raising min_confidence.
+```
+
+Sources analysed: worst-performing UTC hours, lowest-performing candle
+patterns/features, confidence-band win rates, drawdown / consecutive-loss lock
+incidents, and the adaptive engine's win-rate/avg-R trend versus the prior week.
+
+### Where the files live (for the dashboard)
+
+The dashboard reads the `logs/reports/` directory:
+
+- `daily_YYYY-MM-DD.json` — one file per day
+- `weekly_YYYY-Www.json` — one file per ISO week
+- `monthly_YYYY-MM.json` — one file per month
+- `history.jsonl` — one appended line per daily report (used for weekly/monthly aggregation)
+
+### Live vs paper (mode-aware)
+
+`PerformanceReporter` is mode-aware: it accepts a stats source so it can report
+on **live** stats (default: `daily_stats.json` / weekly) or **paper** stats
+once paper-trading files exist. Missing paper files never hard-fail — the
+reporter degrades gracefully.
+
+### Configuration
+
+| Setting | Default | Description |
+|---|---|---|
+| `REPORTS_DIR` | `logs/reports` | Directory for machine-readable reports |
+| `REPORT_MIN_SAMPLE` | 5 | Min trades in a bucket before an improvement suggestion surfaces |
+| `REPORT_WEAK_WIN_RATE` | 0.40 | Win-rate threshold below which an hour/pattern is flagged |
+
+### Tests
+
+```bash
+pip install pytest hypothesis
+python -m pytest tests/test_reporting.py -q
+```
+
+The suite covers P&L/return math (including the `starting_equity == 0` → 0.00%
+edge case), best/worst extraction, hour-bucket and confidence-band win rates,
+the improvement-suggestion generator, and rollover detection (day-only,
+day+week, day+week+month, and no double-emit), plus property-based invariants.
 
 ---
 

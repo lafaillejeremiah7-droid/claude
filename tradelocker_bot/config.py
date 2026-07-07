@@ -85,3 +85,18 @@ NEWS_BUFFER_MINUTES = 30
 # === Bot Settings ===
 SCAN_INTERVAL_SECONDS = 60  # How often to check for signals (1 minute)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# === Performance Reporting ===
+# Directory (relative to the bot root) where machine-readable performance
+# reports are written. The reporter only ever WRITES inside this directory;
+# it never overwrites daily_stats.json / journal / adaptive_config.json.
+REPORTS_DIR = os.getenv("REPORTS_DIR", "logs/reports")
+
+# Minimum number of trades in a bucket (hour / pattern / confidence band)
+# before the weekly "what to improve" engine will surface a suggestion.
+# Keeps insights statistically meaningful instead of reacting to noise.
+REPORT_MIN_SAMPLE = int(os.getenv("REPORT_MIN_SAMPLE", "5"))
+
+# Win-rate threshold (fraction) below which an hour/pattern is flagged as
+# under-performing in the weekly improvement section.
+REPORT_WEAK_WIN_RATE = float(os.getenv("REPORT_WEAK_WIN_RATE", "0.40"))
