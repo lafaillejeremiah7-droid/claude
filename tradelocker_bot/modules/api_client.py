@@ -7,13 +7,25 @@ Uses the official tradelocker Python library as base with
 additional custom methods for advanced functionality.
 """
 import time
+import random
 import logging
 import requests
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional
 
-from config import BASE_URL, TL_EMAIL, TL_PASSWORD, TL_SERVER
+from config import (
+    BASE_URL,
+    TL_EMAIL,
+    TL_PASSWORD,
+    TL_SERVER,
+    API_MIN_REQUEST_INTERVAL,
+    API_MAX_RETRIES,
+    API_BACKOFF_BASE,
+    API_BACKOFF_MAX,
+    HISTORY_CACHE_TTL,
+    HISTORY_CACHE_TTL_DEFAULT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +55,123 @@ class TradeLockerClient:
 
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
+
+        # --- Rate-limiting / resilience state ---
+        # Timestamp (monotonic) of the last outbound TradeLocker HTTP request,
+        # used by _throttle() to enforce a minimum spacing between calls.
+        self._last_request_ts: float = 0.0
+        self._min_request_interval: float = API_MIN_REQUEST_INTERVAL
+        self._max_retries: int = API_MAX_RETRIES
+        self._backoff_base: float = API_BACKOFF_BASE
+        self._backoff_max: float = API_BACKOFF_MAX
+        # Short-lived price-history bar cache:
+        #   key   -> (tradableInstrumentId, resolution)
+        #   value -> {"df": <DataFrame copy>, "expires": <monotonic ts>}
+        self._history_cache: dict = {}
+
+    # ========================================
+    # RATE LIMITING / RESILIENCE HELPERS
+    # ========================================
+
+    def _throttle(self) -> None:
+        """
+        Sleep just enough to keep at least ``_min_request_interval`` seconds
+        between consecutive outbound TradeLocker HTTP requests. This protects
+        the DEMO server's aggressive per-second rate limit (HTTP 429).
+        """
+        interval = self._min_request_interval
+        if interval <= 0:
+            self._last_request_ts = time.monotonic()
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._last_request_ts
+        if 0 <= elapsed < interval:
+            time.sleep(interval - elapsed)
+        self._last_request_ts = time.monotonic()
+
+    def _history_ttl(self, resolution: int) -> float:
+        """Return the cache TTL (seconds) for a given resolution."""
+        return HISTORY_CACHE_TTL.get(int(resolution), HISTORY_CACHE_TTL_DEFAULT)
+
+    def _compute_backoff(self, attempt: int, retry_after: Optional[str]) -> float:
+        """
+        Compute how long to sleep before the next retry.
+
+        Honors the ``Retry-After`` response header when present (seconds form),
+        otherwise uses exponential backoff: base * 2**attempt, capped at
+        ``_backoff_max``, plus a small random jitter to avoid thundering herds.
+        ``attempt`` is 0-based (0 for the first retry).
+        """
+        if retry_after:
+            try:
+                wait = float(retry_after)
+                if wait >= 0:
+                    return min(wait, self._backoff_max)
+            except (ValueError, TypeError):
+                pass  # Non-numeric (HTTP-date) Retry-After: fall back to backoff.
+
+        wait = self._backoff_base * (2 ** attempt)
+        wait = min(wait, self._backoff_max)
+        jitter = random.uniform(0, self._backoff_base * 0.25)
+        return wait + jitter
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> Optional[requests.Response]:
+        """
+        Perform a throttled HTTP request with exponential-backoff retries on
+        transient failures (HTTP 429 and 5xx).
+
+        Retries up to ``_max_retries`` times, honoring ``Retry-After`` on 429.
+        On persistent failure (or a connection error) returns the last response
+        if one exists, otherwise ``None``. Non-transient HTTP responses (e.g.
+        200, 4xx other than 429) are returned immediately for the caller to
+        handle.
+        """
+        last_resp: Optional[requests.Response] = None
+        total_attempts = self._max_retries + 1
+
+        for attempt in range(total_attempts):
+            self._throttle()
+            try:
+                resp = self.session.request(method, url, **kwargs)
+            except requests.exceptions.RequestException as e:
+                # Network-level error: back off and retry if attempts remain.
+                if attempt < total_attempts - 1:
+                    wait = self._compute_backoff(attempt, None)
+                    logger.warning(
+                        f"Request error ({e.__class__.__name__}) on {url}; "
+                        f"retry {attempt + 1}/{self._max_retries} in {wait:.2f}s"
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.error(f"Request failed after retries: {e}")
+                return None
+
+            last_resp = resp
+
+            # Retry on 429 (rate limited) and 5xx (server errors).
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < total_attempts - 1:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = self._compute_backoff(attempt, retry_after)
+                    logger.warning(
+                        f"HTTP {resp.status_code} on {url}; backing off {wait:.2f}s "
+                        f"(retry {attempt + 1}/{self._max_retries}"
+                        + (f", Retry-After={retry_after}" if retry_after else "")
+                        + ")"
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.warning(
+                    f"HTTP {resp.status_code} on {url}; exhausted "
+                    f"{self._max_retries} retries"
+                )
+                return resp
+
+            # Success or a non-transient status: hand back to caller.
+            return resp
+
+        return last_resp
 
     # ========================================
     # AUTHENTICATION
@@ -265,6 +394,18 @@ class TradeLockerClient:
             logger.error(f"Cannot get price history: instrument/route not found for {symbol}")
             return None
 
+        # --- Short-lived bar cache -------------------------------------------
+        # Keyed by (tradableInstrumentId, resolution). Return a copy of cached
+        # bars while fresh so the bot doesn't refetch identical bars every 60s.
+        cache_key = (instrument_id, int(resolution))
+        cached = self._history_cache.get(cache_key)
+        if cached is not None and time.monotonic() < cached["expires"]:
+            logger.debug(
+                f"Price history cache HIT for {symbol} @ {resolution}s "
+                f"(age within {self._history_ttl(resolution):.0f}s TTL)"
+            )
+            return cached["df"].copy()
+
         # Calculate timestamps
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - (lookback_bars * resolution * 1000)
@@ -279,32 +420,69 @@ class TradeLockerClient:
             "to": now_ms,
         }
 
-        try:
-            resp = self.session.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-
-            bars = data.get("d", {}).get("bars", [])
-            if not bars:
-                logger.warning(f"No price data returned for {symbol} @ {resolution}s")
-                return None
-
-            df = pd.DataFrame(bars)
-            # TradeLocker returns: t(timestamp), o(open), h(high), l(low), c(close), v(volume)
-            df.rename(
-                columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"},
-                inplace=True,
+        resp = self._request_with_retry("GET", url, headers=headers, params=params)
+        if resp is None:
+            logger.warning(
+                f"Failed to get price history for {symbol} @ {resolution}s "
+                f"(no response after retries)"
             )
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-            for col in ["open", "high", "low", "close", "volume"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-
-            return df.sort_values("timestamp").reset_index(drop=True)
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get price history for {symbol}: {e}")
             return None
+
+        if resp.status_code != 200:
+            logger.warning(
+                f"Failed to get price history for {symbol} @ {resolution}s: "
+                f"HTTP {resp.status_code}"
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            logger.warning(
+                f"Price history for {symbol} @ {resolution}s: non-JSON response "
+                f"(HTTP {resp.status_code}): {e}"
+            )
+            return None
+
+        bars = data.get("d", {}).get("bars", []) if isinstance(data, dict) else []
+        if not bars:
+            # Better diagnostics: distinguish a genuinely empty payload from a
+            # masked throttle. Log status + top-level JSON keys + a short,
+            # secret-free snippet of the body.
+            top_keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+            inner_keys = (
+                list(data.get("d", {}).keys())
+                if isinstance(data, dict) and isinstance(data.get("d"), dict)
+                else None
+            )
+            snippet = resp.text[:200].replace("\n", " ") if resp.text else ""
+            logger.warning(
+                f"No price data returned for {symbol} @ {resolution}s | "
+                f"HTTP {resp.status_code} | top_keys={top_keys} | "
+                f"d_keys={inner_keys} | body[:200]={snippet!r}"
+            )
+            return None
+
+        df = pd.DataFrame(bars)
+        # TradeLocker returns: t(timestamp), o(open), h(high), l(low), c(close), v(volume)
+        df.rename(
+            columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"},
+            inplace=True,
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # Store a copy in the cache with a resolution-appropriate TTL.
+        self._history_cache[cache_key] = {
+            "df": df.copy(),
+            "expires": time.monotonic() + self._history_ttl(resolution),
+        }
+
+        return df
 
     def get_latest_price(self, symbol: str) -> Optional[dict]:
         """Get latest bid/ask price for a symbol."""
@@ -325,6 +503,7 @@ class TradeLockerClient:
         }
 
         try:
+            self._throttle()
             resp = self.session.get(url, headers=headers, params=params)
             resp.raise_for_status()
             data = resp.json()
