@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TradeLocker Dashboard</title>
+<style>
+  :root {
+    --bg: #0a0e14; --panel: #10151f; --border: #1e2733;
+    --fg: #d7dde5; --muted: #6b7688; --amber: #f5a623;
+    --green: #35d07f; --red: #ff5d5d; --neutral: #8b93a1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.5;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    background: #0c1119;
+  }
+  header h1 { font-size: 15px; margin: 0; color: var(--amber); letter-spacing: .5px; }
+  .badge {
+    padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; border: 1px solid var(--border);
+  }
+  .badge.live { background: #14311f; color: var(--green); border-color: #1d6b3e; }
+  .badge.paper { background: #33260c; color: var(--amber); border-color: #6b4d1d; }
+  #clock { margin-left: auto; color: var(--muted); }
+  #conn { font-size: 11px; }
+  #conn.ok { color: var(--green); } #conn.warn { color: var(--amber); } #conn.err { color: var(--red); }
+  .grid {
+    display: grid; gap: 10px; padding: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 5px; padding: 12px; min-height: 90px;
+  }
+  .panel h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--muted); margin: 0 0 10px; border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+  .row { display: flex; justify-content: space-between; padding: 2px 0; }
+  .row .k { color: var(--muted); }
+  .big { font-size: 24px; font-weight: 700; }
+  .green { color: var(--green); } .red { color: var(--red); } .neutral { color: var(--neutral); }
+  .muted { color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: right; padding: 3px 6px; }
+  th { color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  .feed { max-height: 220px; overflow-y: auto; }
+  .feed .item { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px dashed #182029; }
+  .tag { padding: 0 5px; border-radius: 3px; font-size: 10px; font-weight: 700; }
+  .tag.OPEN { background:#14311f;color:var(--green);} .tag.CLOSE{background:#33260c;color:var(--amber);}
+  .tag.NEAR_MISS{background:#2a1520;color:#e07;} .tag.APPROVED{background:#132b3a;color:#4ab;}
+  .empty { color: var(--muted); font-style: italic; padding: 12px 0; text-align:center; }
+  canvas { width: 100%; height: 140px; display: block; }
+  ul.improve { margin: 4px 0; padding-left: 16px; } ul.improve li { margin: 2px 0; }
+  #celebrate {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.7); z-index: 99; font-size: 40px; color: var(--green);
+    flex-direction: column; text-align:center;
+  }
+  .gate-bar { height: 8px; background:#0c1119; border-radius:4px; overflow:hidden; margin-top:6px; }
+  .gate-fill { height:100%; background: var(--amber); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TRADELOCKER DASHBOARD</h1>
+  <span id="mode" class="badge">--</span>
+  <span id="status" class="muted"></span>
+  <span id="clock">--:--:-- UTC</span>
+  <span id="conn" class="warn">connecting</span>
+</header>
+
+<div class="grid">
+  <div class="panel" id="p-account">
+    <h2>Account / Equity</h2>
+    <div class="big" id="equity">--</div>
+    <div class="row"><span class="k">Balance</span><span id="balance">--</span></div>
+    <div class="row"><span class="k">Free margin</span><span id="freemargin">--</span></div>
+    <div class="row"><span class="k">Source</span><span id="equitysrc" class="muted">--</span></div>
+  </div>
+
+  <div class="panel" id="p-pnl">
+    <h2>P&amp;L</h2>
+    <div class="row"><span class="k">Daily realized</span><span id="dailypnl">--</span></div>
+    <div class="row"><span class="k">Daily return</span><span id="dailyret">--</span></div>
+    <div class="row"><span class="k">Cumulative</span><span id="cumpnl">--</span></div>
+    <div class="row"><span class="k">Unrealized</span><span id="unrealpnl">--</span></div>
+  </div>
+
+  <div class="panel" id="p-win">
+    <h2>Win Stats</h2>
+    <div class="row"><span class="k">Daily win rate</span><span id="dailywr">--</span></div>
+    <div class="row"><span class="k">Adaptive win rate</span><span id="adaptwr">--</span></div>
+    <div class="row"><span class="k">W / L</span><span id="wl">--</span></div>
+    <div class="row"><span class="k">Streak</span><span id="streak">--</span></div>
+  </div>
+
+  <div class="panel" id="p-conf">
+    <h2>Confidence vs Gate</h2>
+    <div class="row"><span class="k">Gate</span><span id="gate">--</span></div>
+    <div class="gate-bar"><div class="gate-fill" id="gatefill" style="width:0%"></div></div>
+    <div id="confrecent" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="panel" id="p-countdown">
+    <h2>Bot Status / Next Scan</h2>
+    <div class="big" id="countdown">--</div>
+    <div class="row"><span class="k">State</span><span id="cdstate">--</span></div>
+    <div class="row"><span class="k">Next scan</span><span id="nextscan" class="muted">--</span></div>
+    <div class="row"><span class="k">Last update</span><span id="lastupdate" class="muted">--</span></div>
+  </div>
+
+  <div class="panel" id="p-equitycurve" style="grid-column: span 2;">
+    <h2>Equity Curve</h2>
+    <canvas id="chart" width="600" height="140"></canvas>
+    <div id="chartempty" class="empty" style="display:none;">waiting for data</div>
+  </div>
+
+  <div class="panel" id="p-positions" style="grid-column: span 2;">
+    <h2>Active Positions</h2>
+    <div id="positions"></div>
+  </div>
+
+  <div class="panel" id="p-feed" style="grid-column: span 2;">
+    <h2>Trade Feed</h2>
+    <div class="feed" id="feed"></div>
+  </div>
+
+  <div class="panel" id="p-reports" style="grid-column: span 2;">
+    <h2>Reports</h2>
+    <div id="reports"></div>
+  </div>
+</div>
+
+<div id="celebrate"><div>🎉 WINNING TRADE 🎉</div><div id="celebrate-detail" style="font-size:16px;color:var(--fg)"></div></div>
+
+<script>
+"use strict";
+const MAX_RECONNECT_ATTEMPTS = 12;
+const MAX_RECONNECT_INTERVAL_MS = 5000;
+
+// Mirror of the backend plan_reconnects shape (bounded schedule).
+function planReconnects(intervalMs, maxAttempts, lastSnapshot) {
+  const capped = Math.max(0, Math.min(maxAttempts, MAX_RECONNECT_ATTEMPTS));
+  const delay = Math.min(intervalMs, MAX_RECONNECT_INTERVAL_MS);
+  const out = [];
+  for (let i = 1; i <= capped; i++) out.push({ attempt: i, delay, displayed_snapshot: lastSnapshot });
+  return out;
+}
+
+let lastSnapshot = null;
+let reconnectAttempts = 0;
+let seenClosedIds = new Set();
+let firstLoad = true;
+
+function money(v) {
+  if (v === null || v === undefined || typeof v !== "number") return "--";
+  return (v < 0 ? "-$" : "$") + Math.abs(v).toFixed(2);
+}
+function pct(v) {
+  if (v === null || v === undefined || typeof v !== "number") return "--";
+  return (v >= 0 ? "+" : "") + v.toFixed(2) + "%";
+}
+function signClass(v) {
+  if (typeof v !== "number") return "muted";
+  return v > 0 ? "green" : v < 0 ? "red" : "neutral";
+}
+function setText(id, text, cls) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  if (cls !== undefined) el.className = cls;
+}
+
+function render(s) {
+  if (!s) return;
+  lastSnapshot = s;
+
+  // Mode badge
+  const mode = s.mode || "live";
+  const modeEl = document.getElementById("mode");
+  modeEl.textContent = mode; modeEl.className = "badge " + mode;
+
+  const st = (s.bot_status && s.bot_status.state) || "--";
+  setText("status", "● " + st, st === "bot_offline" ? "red" : st === "initializing" ? "warn" : "muted");
+
+  // Account
+  const a = s.account || {};
+  setText("equity", a.equity_available ? money(a.equity) : "waiting for data", a.equity_available ? "big" : "big muted");
+  setText("balance", a.balance_available ? money(a.balance) : "--");
+  setText("freemargin", a.free_margin_available ? money(a.free_margin) : "--");
+  setText("equitysrc", a.equity_source || "--", "muted");
+
+  // PnL
+  const p = s.pnl || {};
+  setText("dailypnl", p.daily_realized_available ? money(p.daily_realized) : "--", signClass(p.daily_realized));
+  setText("dailyret", p.daily_return_pct_available ? pct(p.daily_return_pct) : "--", signClass(p.daily_return_pct));
+  setText("cumpnl", money(p.cumulative_realized), signClass(p.cumulative_realized));
+  setText("unrealpnl", p.total_unrealized_available ? money(p.total_unrealized) : "--", signClass(p.total_unrealized));
+
+  // Win stats
+  const w = s.win_stats || {};
+  setText("dailywr", w.daily_win_rate_available ? w.daily_win_rate.toFixed(1) + "%" : "N/A");
+  setText("adaptwr", w.adaptive_win_rate_available ? w.adaptive_win_rate.toFixed(1) + "%" : "N/A");
+  setText("wl", (w.wins ?? 0) + " / " + (w.losses ?? 0));
+  const streakTxt = w.win_streak > 0 ? "W" + w.win_streak : w.loss_streak > 0 ? "L" + w.loss_streak : "-";
+  setText("streak", streakTxt, w.win_streak > 0 ? "green" : w.loss_streak > 0 ? "red" : "neutral");
+
+  // Confidence
+  const c = s.confidence || {};
+  setText("gate", c.gate_available ? c.gate.toFixed(1) + " / 10" : "unavailable");
+  document.getElementById("gatefill").style.width = (c.gate_available ? (c.gate / 10 * 100) : 0) + "%";
+  const cr = document.getElementById("confrecent");
+  cr.innerHTML = "";
+  (c.recent || []).slice(0, 5).forEach(r => {
+    const div = document.createElement("div");
+    div.className = "row";
+    const cls = r.classification === "met_gate" ? "green" : r.classification === "near_miss" ? "red" : "muted";
+    div.innerHTML = `<span class="k">${r.symbol || "--"}</span><span class="${cls}">${(r.value ?? 0).toFixed(1)} · ${r.classification || "unknown"}</span>`;
+    cr.appendChild(div);
+  });
+  if (!(c.recent || []).length) cr.innerHTML = '<div class="empty">no confidence data</div>';
+
+  // Countdown
+  const cd = s.countdown || {};
+  setText("countdown", cd.seconds_remaining !== null && cd.seconds_remaining !== undefined ? cd.seconds_remaining + "s" : "--", "big");
+  setText("cdstate", cd.state || "--", cd.state === "locked" ? "red" : "muted");
+  setText("nextscan", cd.next_scan_utc ? cd.next_scan_utc.slice(11, 19) + " UTC" : "--", "muted");
+  setText("lastupdate", s.last_update_utc ? s.last_update_utc.slice(11, 19) + " UTC" : "no data", "muted");
+
+  // Equity curve
+  drawChart((s.equity_curve && s.equity_curve.points) || []);
+
+  // Positions
+  renderPositions(s.positions || []);
+
+  // Feed
+  renderFeed(s.feed || []);
+
+  // Reports
+  renderReports(s.reports || {});
+
+  // Celebration on real winning close (guarded)
+  maybeCelebrate(s.feed || []);
+  firstLoad = false;
+}
+
+function renderPositions(positions) {
+  const el = document.getElementById("positions");
+  if (!positions.length) { el.innerHTML = '<div class="empty">no open positions</div>'; return; }
+  let html = "<table><tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>SL</th><th>TP</th><th>R:R</th><th>uPnL</th><th>→SL</th><th>→TP</th></tr>";
+  positions.forEach(pos => {
+    const up = pos.unrealized_pnl_available ? money(pos.unrealized_pnl) : "--";
+    const upc = pos.unrealized_pnl_available ? signClass(pos.unrealized_pnl) : "muted";
+    html += `<tr><td>${pos.symbol || "--"}</td><td>${pos.direction || "--"}</td>` +
+      `<td>${fmt(pos.entry_price)}</td><td>${fmt(pos.stop_loss)}</td><td>${fmt(pos.take_profit)}</td>` +
+      `<td>${fmt(pos.risk_reward_ratio)}</td><td class="${upc}">${up}</td>` +
+      `<td>${pos.distances_available ? fmt(pos.distance_to_sl) : "--"}</td>` +
+      `<td>${pos.distances_available ? fmt(pos.distance_to_tp) : "--"}</td></tr>`;
+  });
+  el.innerHTML = html + "</table>";
+}
+function fmt(v) { return typeof v === "number" ? v.toFixed(2) : "--"; }
+
+function renderFeed(feed) {
+  const el = document.getElementById("feed");
+  if (!feed.length) { el.innerHTML = '<div class="empty">waiting for data / bot offline</div>'; return; }
+  el.innerHTML = feed.map(f => {
+    const t = (f.timestamp_utc || "").slice(11, 19);
+    const conf = (typeof f.confidence === "number") ? ` · ${f.confidence.toFixed(1)}/10` : "";
+    const pnl = (typeof f.pnl === "number") ? ` · ${money(f.pnl)}` : "";
+    return `<div class="item"><span class="muted">${t}</span>` +
+      `<span class="tag ${f.action}">${f.action || "?"}</span>` +
+      `<span>${f.symbol || ""} ${f.direction || ""}${conf}${pnl}</span></div>`;
+  }).join("");
+}
+
+function renderReports(reports) {
+  const el = document.getElementById("reports");
+  const parts = [];
+  ["daily", "weekly", "monthly"].forEach(k => {
+    const r = reports[k];
+    if (!r) { parts.push(`<div class="row"><span class="k">${k}</span><span class="muted">no report</span></div>`); return; }
+    const cls = signClass(r.pnl_usd);
+    parts.push(`<div class="row"><span class="k">${k} (${r.date || r.week || r.month || ""})</span>` +
+      `<span class="${cls}">${money(r.pnl_usd)} · ${pct(r.return_pct)}</span></div>`);
+  });
+  const wk = reports.weekly;
+  if (wk && Array.isArray(wk.improvements) && wk.improvements.length) {
+    parts.push('<div class="k" style="margin-top:8px;">What to improve (weekly):</div><ul class="improve">' +
+      wk.improvements.map(s => `<li>${escapeHtml(s)}</li>`).join("") + "</ul>");
+  }
+  el.innerHTML = parts.join("");
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+function maybeCelebrate(feed) {
+  if (firstLoad) { // seed without celebrating on initial load
+    feed.forEach(f => { if (f.action === "CLOSE" && f.is_win === true) seenClosedIds.add(f.timestamp_utc + f.symbol); });
+    return;
+  }
+  for (const f of feed) {
+    if (f.action === "CLOSE" && f.is_win === true) {
+      const id = f.timestamp_utc + f.symbol;
+      if (!seenClosedIds.has(id)) {
+        seenClosedIds.add(id);
+        showCelebrate(f);
+      }
+    }
+  }
+}
+function showCelebrate(f) {
+  const el = document.getElementById("celebrate");
+  document.getElementById("celebrate-detail").textContent =
+    `${f.symbol} ${typeof f.pnl === "number" ? money(f.pnl) : ""}`;
+  el.style.display = "flex";
+  setTimeout(() => { el.style.display = "none"; }, 3500);
+}
+
+function drawChart(points) {
+  const canvas = document.getElementById("chart");
+  const empty = document.getElementById("chartempty");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!points || points.length < 2) { empty.style.display = "block"; canvas.style.display = "none"; return; }
+  empty.style.display = "none"; canvas.style.display = "block";
+  const ys = points.map(p => p.equity);
+  const min = Math.min(...ys), max = Math.max(...ys), range = (max - min) || 1;
+  const pad = 8;
+  ctx.strokeStyle = "#f5a623"; ctx.lineWidth = 1.5; ctx.beginPath();
+  points.forEach((p, i) => {
+    const x = pad + (i / (points.length - 1)) * (W - 2 * pad);
+    const y = H - pad - ((p.equity - min) / range) * (H - 2 * pad);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.fillStyle = "#6b7688"; ctx.font = "10px monospace";
+  ctx.fillText(max.toFixed(2), 2, 10);
+  ctx.fillText(min.toFixed(2), 2, H - 2);
+}
+
+// UTC clock
+setInterval(() => {
+  const d = new Date();
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  const ss = String(d.getUTCSeconds()).padStart(2, "0");
+  document.getElementById("clock").textContent = `${hh}:${mm}:${ss} UTC`;
+}, 1000);
+
+// --- data flow: fetch snapshot then subscribe to SSE with bounded reconnect ---
+async function loadInitial() {
+  try {
+    const res = await fetch("/api/snapshot");
+    if (res.ok) render(await res.json());
+  } catch (e) { /* offline */ }
+  connectStream();
+}
+
+function connectStream() {
+  const es = new EventSource("/api/stream");
+  es.addEventListener("snapshot", ev => {
+    reconnectAttempts = 0;
+    setConn("ok", "live");
+    try { render(JSON.parse(ev.data)); } catch (e) {}
+  });
+  es.onopen = () => { reconnectAttempts = 0; setConn("ok", "live"); };
+  es.onerror = () => {
+    es.close();
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      setConn("err", "disconnected");
+      return;
+    }
+    reconnectAttempts++;
+    const schedule = planReconnects(reconnectAttempts * 1000, MAX_RECONNECT_ATTEMPTS, lastSnapshot);
+    const delay = schedule.length ? schedule[0].delay : MAX_RECONNECT_INTERVAL_MS;
+    setConn("warn", `reconnecting ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`);
+    setTimeout(connectStream, delay); // keep displaying lastSnapshot throughout
+  };
+}
+function setConn(cls, text) {
+  const el = document.getElementById("conn");
+  el.className = cls; el.textContent = text;
+}
+
+loadInitial();
+</script>
+</body>
+</html>
