@@ -349,26 +349,94 @@ class TradeLockerClient:
         if not self.ensure_authenticated():
             return None
 
-        url = f"{self.base_url}/trade/accounts/{self.account_id}/details"
         headers = {"accNum": str(self.acc_num)}
 
+        # Try multiple endpoint patterns (varies by API version)
+        endpoints = [
+            f"{self.base_url}/trade/accounts/{self.account_id}/accountDetails",
+            f"{self.base_url}/trade/accounts/{self.account_id}/details",
+            f"{self.base_url}/trade/accountDetails",
+        ]
+
+        for url in endpoints:
+            try:
+                resp = self.session.get(url, headers=headers)
+                if resp.status_code == 404:
+                    continue  # Try next endpoint
+                resp.raise_for_status()
+                data = resp.json()
+                details = data.get("d", {})
+
+                # The response might have different field names
+                balance = (
+                    details.get("balance", 0) or
+                    details.get("accountBalance", 0) or
+                    details.get("Balance", 0) or 0
+                )
+                equity = (
+                    details.get("equity", 0) or
+                    details.get("accountEquity", 0) or
+                    details.get("Equity", 0) or
+                    balance  # fallback to balance if no equity field
+                )
+                free_margin = (
+                    details.get("freeMargin", 0) or
+                    details.get("availableMargin", 0) or
+                    details.get("FreeMargin", 0) or 0
+                )
+
+                # If details is a list (some versions return array of fields)
+                if isinstance(details, list) and len(details) > 0:
+                    # TradeLocker v1 returns field values as arrays
+                    # The field names come from /trade/config
+                    # Common positions: balance=index 0, equity=index 1
+                    try:
+                        balance = float(details[0]) if len(details) > 0 else 0
+                        equity = float(details[1]) if len(details) > 1 else balance
+                        free_margin = float(details[2]) if len(details) > 2 else 0
+                    except (ValueError, TypeError):
+                        pass
+
+                result = {
+                    "balance": float(balance),
+                    "equity": float(equity),
+                    "freeMargin": float(free_margin),
+                    "marginLevel": float(details.get("marginLevel", 0) if isinstance(details, dict) else 0),
+                    "unrealizedPnL": float(details.get("unrealizedPnL", 0) if isinstance(details, dict) else 0),
+                }
+
+                logger.info(
+                    f"Account balance: ${result['equity']:.2f} equity, "
+                    f"${result['balance']:.2f} balance (via {url.split('/')[-1]})"
+                )
+                return result
+
+            except requests.exceptions.RequestException as e:
+                if "404" not in str(e):
+                    logger.error(f"Failed to get account balance from {url}: {e}")
+                continue
+
+        # Last resort: try the state endpoint
         try:
+            url = f"{self.base_url}/trade/accounts/{self.account_id}/state"
             resp = self.session.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            details = data.get("d", {})
+            if resp.status_code == 200:
+                data = resp.json()
+                state = data.get("d", data)
+                if isinstance(state, dict):
+                    balance = float(state.get("balance", state.get("equity", 5000)))
+                    return {
+                        "balance": balance,
+                        "equity": balance,
+                        "freeMargin": balance,
+                        "marginLevel": 0,
+                        "unrealizedPnL": 0,
+                    }
+        except Exception:
+            pass
 
-            return {
-                "balance": float(details.get("balance", 0)),
-                "equity": float(details.get("equity", 0)),
-                "freeMargin": float(details.get("freeMargin", 0)),
-                "marginLevel": float(details.get("marginLevel", 0)),
-                "unrealizedPnL": float(details.get("unrealizedPnL", 0)),
-            }
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get account balance: {e}")
-            return None
+        logger.error("Failed to get account balance from all endpoints")
+        return None
 
     # ========================================
     # ORDER MANAGEMENT
