@@ -62,6 +62,8 @@ from modules.risk_management import RiskManager
 from modules.session_filter import can_trade_now, check_session_status
 from modules.trade_manager import TradeManager
 from modules.adaptive_engine import AdaptiveEngine, TradeFeatures
+from modules.reporting import PerformanceReporter
+from config import REPORTS_DIR, REPORT_MIN_SAMPLE, REPORT_WEAK_WIN_RATE
 
 # ========================================
 # LOGGING SETUP
@@ -117,6 +119,23 @@ class TradingBot:
 
         # Track pending trades (for feature recording on close)
         self.pending_features: dict = {}  # position_id -> TradeFeatures
+
+        # PERFORMANCE REPORTER - emits daily/weekly/monthly reports on rollover.
+        # READ-mostly of the bot's stats; only writes to logs/reports/.
+        # Mode-aware so paper stats can be reported later without code changes.
+        bot_root = Path(__file__).parent
+        # NOTE: dry runs still write to the live daily_stats.json, so we report
+        # on "live" stats here. The dedicated paper-trading chunk (pending) will
+        # construct the reporter with mode="paper" once separate paper stat
+        # files exist. Missing paper files never hard-fail (graceful degrade).
+        self.reporter = PerformanceReporter(
+            base_dir=bot_root,
+            reports_dir=bot_root / REPORTS_DIR,
+            mode="live",
+            min_sample=REPORT_MIN_SAMPLE,
+            weak_win_rate=REPORT_WEAK_WIN_RATE,
+            log=logger,
+        )
 
         # Signal handling for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -213,6 +232,15 @@ class TradingBot:
         """Single scan cycle."""
         self.scan_count += 1
         self.last_scan_time = datetime.now(timezone.utc)
+
+        # Performance reporting: emit daily/weekly/monthly reports on UTC
+        # rollover. Runs BEFORE can_trade() so the reporter still sees the
+        # just-ended day's stats before they are reset. Must never throw into
+        # the trading loop.
+        try:
+            self.reporter.maybe_emit(self.last_scan_time)
+        except Exception as e:
+            logger.warning(f"Performance reporter error (non-fatal): {e}")
 
         # Ensure authenticated
         if not self.client.ensure_authenticated():
