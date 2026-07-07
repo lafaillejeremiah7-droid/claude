@@ -49,10 +49,6 @@ body::after{content:'';position:fixed;inset:0;z-index:9998;pointer-events:none;b
 .feed-item .action.REJECTED{background:rgba(255,77,77,0.1);color:var(--red);}
 .feed-item .action.NEAR_MISS{background:rgba(255,77,77,0.08);color:var(--red);opacity:0.7;}
 .feed-item .action.SCAN{background:rgba(240,196,25,0.05);color:var(--amber3);}
-.leader-row{display:flex;justify-content:space-between;padding:2px 0;font-size:9px;border-bottom:1px solid rgba(240,196,25,0.05);}
-.leader-row .rank{color:var(--amber3);width:16px;}
-.leader-row .name{flex:1;color:var(--amber);}
-.leader-row .pnl{font-weight:700;}
 .metrics-bar{height:10px;background:#111;border:1px solid var(--border);margin:3px 0;position:relative;overflow:hidden;}
 .metrics-fill{height:100%;transition:width 0.3s;}
 canvas.graph{width:100%;height:220px;display:block;}
@@ -74,6 +70,7 @@ canvas.chart{width:100%;height:140px;display:block;}
 "use strict";
 const MAX_RECONNECT=12,RECONNECT_BASE=1000,MAX_FEED=30,SCAN_INTERVAL=60;
 const S={ready:false,snapshot:null,reconnects:0,sse:null,seenCloses:new Set(),celebrating:false,_feedSeeded:false};
+let _lastUpdateSeen=null,_pipelineAnimTimer=null,_pipelineAnimStep=0;
 setTimeout(()=>{S.ready=true;},5000);
 
 function $(id){return document.getElementById(id);}
@@ -185,8 +182,23 @@ app.innerHTML=`
 </div>
 <div class="row row3b">
   <div class="panel">
-    <div class="panel-title">TOP TRADERS · 24H</div>
-    <div id="leaderboard"></div>
+    <div class="panel-title">LIVE PRICES</div>
+    <div id="livePricesPanel">
+      <div style="margin-bottom:10px;">
+        <div style="font-size:9px;color:var(--amber3);margin-bottom:2px;">BTCUSD</div>
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <span class="big" id="lpBtcPrice" style="color:var(--amber2);">--</span>
+          <span style="font-size:10px;font-weight:700;" id="lpBtcChange" class="dim">--</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:9px;color:var(--amber3);margin-bottom:2px;">XAUUSD</div>
+        <div style="display:flex;align-items:baseline;gap:8px;">
+          <span class="big" id="lpXauPrice" style="color:var(--amber2);">--</span>
+          <span style="font-size:10px;font-weight:700;" id="lpXauChange" class="dim">--</span>
+        </div>
+      </div>
+    </div>
   </div>
   <div class="panel">
     <div class="panel-title">TRADE FEED · LIVE</div>
@@ -351,7 +363,15 @@ function render(snap){
   $('heroGate').textContent=conf.gate_available?conf.gate.toFixed(1)+'/10':'--';
   $('heroRealized').textContent=typeof pnl.daily_realized==='number'?money(pnl.daily_realized):'--';
 
-  // Pipeline
+  // Pipeline - check for scan cycle animation trigger
+  const snapUpdate=snap.last_update_utc||null;
+  if(snapUpdate&&snapUpdate!==_lastUpdateSeen){
+    if(_lastUpdateSeen!==null){
+      // New scan cycle detected — fire animation
+      triggerPipelineAnimation(snap.positions||[]);
+    }
+    _lastUpdateSeen=snapUpdate;
+  }
   renderPipeline(bs,snap.positions||[]);
 
   // Countdown
@@ -366,8 +386,8 @@ function render(snap){
   // Feed
   renderFeed(snap.feed||[]);
 
-  // Leaderboard (synthetic from feed)
-  renderLeaderboard(snap.feed||[]);
+  // Live Prices
+  renderLivePrices(snap);
 
   // Metrics
   renderMetrics(ws,conf);
@@ -387,6 +407,8 @@ function render(snap){
 }
 
 function renderPipeline(bs,positions){
+  // If animation is running, don't override — the animation handles highlighting
+  if(_pipelineAnimTimer)return;
   const state=(bs&&bs.state)||'';
   let activeStep='scan';
   if(state==='scanning'||state==='initializing')activeStep='scan';
@@ -395,10 +417,50 @@ function renderPipeline(bs,positions){
   else if(state==='sizing')activeStep='size';
   else if(state==='executing')activeStep='fill';
   else if(state==='managing'||state==='locked')activeStep='settle';
+  // If open positions, show MANAGE (settle) lit
   if(positions&&positions.length>0)activeStep='settle';
   document.querySelectorAll('.pipe-step').forEach(s=>{
     s.classList.toggle('active',s.dataset.step===activeStep);
   });
+}
+
+function triggerPipelineAnimation(positions){
+  // Clear any existing animation
+  if(_pipelineAnimTimer){clearTimeout(_pipelineAnimTimer);_pipelineAnimTimer=null;}
+  const steps=['scan','detect','validate','size','fill','settle'];
+  const durations=[1000,1000,1000,1000,500,500];// ms for each step
+  _pipelineAnimStep=0;
+
+  function lightStep(idx){
+    document.querySelectorAll('.pipe-step').forEach(s=>{
+      // Light up current and all previous steps up to current
+      s.classList.toggle('active',steps.indexOf(s.dataset.step)<=idx);
+    });
+  }
+
+  function advance(){
+    if(_pipelineAnimStep>=steps.length){
+      // Animation done — return to idle
+      _pipelineAnimTimer=null;
+      // If positions open, keep MANAGE (settle) lit
+      if(positions&&positions.length>0){
+        document.querySelectorAll('.pipe-step').forEach(s=>{
+          s.classList.toggle('active',s.dataset.step==='settle');
+        });
+      }else{
+        document.querySelectorAll('.pipe-step').forEach(s=>{
+          s.classList.toggle('active',s.dataset.step==='scan');
+        });
+      }
+      return;
+    }
+    lightStep(_pipelineAnimStep);
+    _pipelineAnimTimer=setTimeout(()=>{
+      _pipelineAnimStep++;
+      advance();
+    },durations[_pipelineAnimStep]||500);
+  }
+  advance();
 }
 
 function renderTraders(feed){
@@ -424,20 +486,61 @@ function renderFeed(feed){
   }).join('');
 }
 
-function renderLeaderboard(feed){
-  const el=$('leaderboard');
-  // Synthetic leaderboard from closed trades
-  const closes=feed.filter(f=>f.action==='CLOSE'&&typeof f.pnl==='number');
-  const names=['gobblewobble','alpha_wolf','btc_sniper','momentum_king','scalp_master','whale_rider','trend_lord','degen_pro'];
-  const cumPnl=closes.reduce((s,c)=>s+c.pnl,0);
-  const leaders=names.map((n,i)=>{
-    const p=i===0?cumPnl:(Math.random()*2000-500);
-    return {name:n,pnl:p};
-  }).sort((a,b)=>b.pnl-a.pnl).slice(0,6);
-  el.innerHTML=leaders.map((l,i)=>{
-    const cls=l.pnl>=0?'green':'red';
-    return '<div class="leader-row"><span class="rank">'+(i+1)+'</span><span class="name">'+l.name+'</span><span class="pnl '+cls+'">'+money(l.pnl)+'</span></div>';
-  }).join('');
+function renderLivePrices(snap){
+  // Try to get BTC price from account equity or feed context
+  const acct=snap.account||{};
+  const feed=snap.feed||[];
+  let btcPrice=null,xauPrice=null,btcChange=null,xauChange=null;
+
+  // Check if snapshot has price data directly
+  if(snap.prices){
+    btcPrice=snap.prices.btcusd||snap.prices.BTCUSD||null;
+    xauPrice=snap.prices.xauusd||snap.prices.XAUUSD||null;
+    btcChange=snap.prices.btcusd_change||snap.prices.BTCUSD_change||null;
+    xauChange=snap.prices.xauusd_change||snap.prices.XAUUSD_change||null;
+  }
+
+  // Try feed entries for price context
+  if(!btcPrice&&feed.length>0){
+    for(const f of feed){
+      if(f.context&&f.context.price&&(f.symbol||'').includes('BTC')){
+        btcPrice=f.context.price;
+        if(f.context.daily_change!=null)btcChange=f.context.daily_change;
+        break;
+      }
+    }
+  }
+  if(!xauPrice&&feed.length>0){
+    for(const f of feed){
+      if(f.context&&f.context.price&&(f.symbol||'').includes('XAU')){
+        xauPrice=f.context.price;
+        if(f.context.daily_change!=null)xauChange=f.context.daily_change;
+        break;
+      }
+    }
+  }
+
+  // Try account-level data
+  if(!btcPrice&&acct.btc_price)btcPrice=acct.btc_price;
+  if(!xauPrice&&acct.xau_price)xauPrice=acct.xau_price;
+
+  const btcEl=$('lpBtcPrice');
+  const xauEl=$('lpXauPrice');
+  const btcChEl=$('lpBtcChange');
+  const xauChEl=$('lpXauChange');
+
+  btcEl.textContent=btcPrice?'$'+Number(btcPrice).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0}):'--';
+  xauEl.textContent=xauPrice?'$'+Number(xauPrice).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
+
+  if(btcChange!=null){
+    btcChEl.textContent=(btcChange>=0?'+':'')+btcChange.toFixed(2)+'%';
+    btcChEl.className=btcChange>=0?'green':'red';
+  }else{btcChEl.textContent='--';btcChEl.className='dim';}
+
+  if(xauChange!=null){
+    xauChEl.textContent=(xauChange>=0?'+':'')+xauChange.toFixed(2)+'%';
+    xauChEl.className=xauChange>=0?'green':'red';
+  }else{xauChEl.textContent='--';xauChEl.className='dim';}
 }
 
 function renderMetrics(ws,conf){
