@@ -155,6 +155,12 @@ SKIP_NEWS_FILTER = os.getenv("SKIP_NEWS_FILTER", "false").lower() in ("true", "1
 # value from adaptive_config.json stands.
 AVOID_HOURS_STR = os.getenv("AVOID_HOURS", "")
 
+# === Graduated Conviction ===
+# When True, allows trades when 4H has direction but 30M is neutral (not opposing).
+# Confidence is capped at 8.5 for these trades (smaller position size).
+# When False, requires full 4H+30M alignment (original strict behavior).
+ALLOW_PARTIAL_ALIGNMENT = os.getenv("ALLOW_PARTIAL_ALIGNMENT", "true").lower() in ("true", "1", "yes")
+
 # === Performance Reporting ===
 # Directory (relative to the bot root) where machine-readable performance
 # reports are written. The reporter only ever WRITES inside this directory;

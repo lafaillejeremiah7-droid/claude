@@ -530,6 +530,9 @@ class TradingBot:
         direction = "bullish" if trend_state.combined == TrendDirection.BULLISH else "bearish"
         dir_arrow = "LONG ^" if direction == "bullish" else "SHORT v"
 
+        # Graduated Conviction: if partial alignment, cap confidence later
+        is_partial_alignment = getattr(trend_state, 'partial_alignment', False)
+
         # 5. Scan for entry signal on 5M (needs 5/6 confirmations - sweep optional)
         entry_signal = scan_for_entry(df_5m, trend_state.combined)
 
@@ -587,6 +590,23 @@ class TradingBot:
         # 7. ADAPTIVE CONFIDENCE GATE (need 8/10+)
         should_trade, confidence, reason = self.adaptive.should_take_trade(features)
 
+        # Graduated Conviction: cap confidence at 8.5 for partial alignment
+        if is_partial_alignment and confidence > 8.5:
+            confidence = 8.5
+            logger.info(
+                f"{symbol}: [PARTIAL ALIGN] Confidence capped at 8.5 "
+                f"(4H={trend_state.direction_4h.value}, 30M={trend_state.direction_30m.value})"
+            )
+
+        # Re-evaluate should_trade with potentially capped confidence
+        min_conf = self.adaptive.params.min_confidence
+        if confidence >= min_conf:
+            should_trade = True
+            reason = "passed"
+        elif is_partial_alignment and confidence >= min_conf:
+            should_trade = True
+            reason = "partial_alignment_passed"
+
         # Calculate estimated SL and TP for display
         from modules.indicators import get_recent_swing_low, get_recent_swing_high
         entry_price = df_5m["close"].iloc[-1] if "close" in df_5m.columns else df_5m["Close"].iloc[-1]
@@ -626,9 +646,10 @@ class TradingBot:
             return
 
         # 8. ALL GATES PASSED - Execute!
+        partial_tag = " [PARTIAL ALIGN]" if is_partial_alignment else ""
         logger.info(
             f"\n{'='*50}\n"
-            f"TRADE SIGNAL APPROVED (Adaptive)\n"
+            f"TRADE SIGNAL APPROVED{partial_tag} (Adaptive)\n"
             f"{'='*50}\n"
             f"Symbol: {symbol}\n"
             f"Direction: {direction.upper()}\n"
@@ -640,6 +661,12 @@ class TradingBot:
             f"Trend Confidence: {trend_state.confidence:.2f}\n"
             f"{'='*50}"
         )
+
+        if is_partial_alignment:
+            logger.info(
+                f"[PARTIAL ALIGN] Taking setup: 4H={trend_state.direction_4h.value}, "
+                f"30M={trend_state.direction_30m.value}, conf={confidence:.1f}, risk={risk_pct:.1f}%"
+            )
 
         self._execute_trade(
             symbol=symbol,
