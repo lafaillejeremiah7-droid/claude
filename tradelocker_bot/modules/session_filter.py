@@ -179,6 +179,71 @@ def get_next_session_open(symbol: str, current_time: Optional[datetime] = None) 
     return next_open, minutes_until
 
 
+def _event_block_window(
+    now_utc: datetime,
+    event: tuple,
+    buffer_minutes: int,
+) -> tuple[datetime, datetime, datetime, datetime]:
+    """
+    Derive the concrete UTC datetimes for a single recurring event, anchored to
+    the DATE of ``now_utc``.
+
+    ``event`` is ``(hour, minute, duration_minutes, description)``.
+
+    Returns ``(event_start, event_end, block_start, block_end)`` where the block
+    window extends ``buffer_minutes`` before the event start and after the event
+    end.
+    """
+    event_hour, event_minute, duration, _description = event
+    event_start = now_utc.replace(
+        hour=event_hour, minute=event_minute, second=0, microsecond=0
+    )
+    event_end = event_start + timedelta(minutes=duration)
+    block_start = event_start - timedelta(minutes=buffer_minutes)
+    block_end = event_end + timedelta(minutes=buffer_minutes)
+    return event_start, event_end, block_start, block_end
+
+
+def is_within_news_block(
+    now_utc: datetime,
+    events,
+    buffer_minutes: int = NEWS_BUFFER_MINUTES,
+) -> tuple[bool, Optional[str]]:
+    """
+    Pure, side-effect-free news-block check.
+
+    A news block is active ONLY when ``now_utc`` actually falls inside the block
+    window of one of ``events`` — i.e. within
+    ``[event_start - buffer, event_end + buffer]``.
+
+    Convention: the block window is INCLUSIVE on BOTH edges. Given an event that
+    runs 13:30-14:30 with a 30-minute buffer, the block window is 13:00-15:00 and
+    both 13:00 and 15:00 are considered blocked; 12:59 and 15:01 are not.
+
+    All datetimes are compared in UTC. Event times are anchored to the calendar
+    date of ``now_utc`` (these are recurring intraday windows), so callers should
+    pass the events scheduled for ``now_utc``'s weekday.
+
+    Args:
+        now_utc: The current (or evaluated) UTC time.
+        events: Iterable of ``(hour, minute, duration_minutes, description)``.
+        buffer_minutes: Minutes before/after the event to also block.
+
+    Returns:
+        Tuple of ``(is_blocked, reason)`` where ``reason`` is the event
+        description (which contains the event name) when blocked, else ``None``.
+    """
+    for event in events:
+        description = event[3]
+        _start, _end, block_start, block_end = _event_block_window(
+            now_utc, event, buffer_minutes
+        )
+        if block_start <= now_utc <= block_end:
+            return True, description
+
+    return False, None
+
+
 def is_near_news_event(
     current_time: Optional[datetime] = None,
     buffer_minutes: int = NEWS_BUFFER_MINUTES,
@@ -186,7 +251,11 @@ def is_near_news_event(
     """
     Check if we're within the buffer zone of a known high-impact news event.
 
-    No trades within 30 minutes before or after major events.
+    No trades within 30 minutes before or after major events. This is the
+    runtime entry point: it resolves the real UTC clock (or an injected
+    ``current_time`` for tests), picks the events scheduled for today, and
+    delegates the actual time-window decision to the pure
+    :func:`is_within_news_block` helper.
 
     Args:
         current_time: Time to check (default: now UTC)
@@ -198,30 +267,28 @@ def is_near_news_event(
     if current_time is None:
         current_time = get_current_utc()
 
-    day_of_week = current_time.weekday()
+    # Recurring events are keyed by weekday and anchored to today's date.
+    events_today = RECURRING_EVENTS.get(current_time.weekday(), [])
 
-    # Check recurring events
-    events_today = RECURRING_EVENTS.get(day_of_week, [])
+    blocked, reason = is_within_news_block(current_time, events_today, buffer_minutes)
 
-    for event_hour, event_minute, duration, description in events_today:
-        event_time = current_time.replace(
-            hour=event_hour, minute=event_minute, second=0, microsecond=0
-        )
-        event_end = event_time + timedelta(minutes=duration)
-
-        # Block window: buffer before event start to buffer after event end
-        block_start = event_time - timedelta(minutes=buffer_minutes)
-        block_end = event_end + timedelta(minutes=buffer_minutes)
-
-        if block_start <= current_time <= block_end:
-            logger.warning(
-                f"NEWS BLOCK: {description} | "
-                f"Event: {event_time.strftime('%H:%M')}-{event_end.strftime('%H:%M')} | "
-                f"Block window: {block_start.strftime('%H:%M')}-{block_end.strftime('%H:%M')}"
+    if blocked:
+        # Only emit the informative WARNING when we are ACTUALLY inside the
+        # block window (i.e. blocked is True). Re-derive the matched event's
+        # window purely for the human-readable log line.
+        for event in events_today:
+            event_start, event_end, block_start, block_end = _event_block_window(
+                current_time, event, buffer_minutes
             )
-            return True, description
+            if block_start <= current_time <= block_end:
+                logger.warning(
+                    f"NEWS BLOCK: {event[3]} | "
+                    f"Event: {event_start.strftime('%H:%M')}-{event_end.strftime('%H:%M')} | "
+                    f"Block window: {block_start.strftime('%H:%M')}-{block_end.strftime('%H:%M')}"
+                )
+                break
 
-    return False, None
+    return blocked, reason
 
 
 def check_session_status(symbol: str, current_time: Optional[datetime] = None) -> SessionStatus:
