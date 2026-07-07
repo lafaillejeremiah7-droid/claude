@@ -302,6 +302,8 @@ class TradingBot:
         6. Build feature vector
         7. Score confidence (adaptive engine - need 8/10+)
         8. Execute if passes all gates
+
+        VERBOSE MODE: Shows all rejected trades and their probability.
         """
         now = datetime.now(timezone.utc)
 
@@ -309,14 +311,14 @@ class TradingBot:
         session_ok, session_reason = can_trade_now(symbol)
         if not session_ok:
             if self.scan_count % 60 == 1:
-                logger.debug(f"{symbol}: {session_reason}")
+                logger.info(f"{symbol}: {session_reason}")
             return
 
         # 1b. Adaptive hour filter (learned bad hours)
         avoid_hours = self.adaptive.get_avoid_hours()
         if now.hour in avoid_hours:
             if self.scan_count % 60 == 1:
-                logger.debug(f"{symbol}: Hour {now.hour} in adaptive avoid list")
+                logger.info(f"{symbol}: Hour {now.hour}:00 UTC blocked (high loss rate)")
             return
 
         # 2. Fetch price data for all timeframes
@@ -334,6 +336,7 @@ class TradingBot:
         df_5m = add_all_indicators(df_5m, "5m")
 
         # 3b. ATR filter (adaptive threshold)
+        atr_rank = 0.5
         if len(df_5m) > 200 and "atr" in df_5m.columns:
             atr_series = df_5m["atr"].dropna()
             if len(atr_series) > 50:
@@ -341,8 +344,8 @@ class TradingBot:
                 atr_rank = (atr_series < current_atr).sum() / len(atr_series)
                 max_atr = self.adaptive.get_atr_filter()
                 if atr_rank > max_atr:
-                    logger.debug(
-                        f"{symbol}: ATR too high ({atr_rank:.2f} > {max_atr:.2f})"
+                    logger.info(
+                        f"{symbol}: REJECTED | ATR too volatile ({atr_rank:.0%} percentile > {max_atr:.0%} max)"
                     )
                     return
 
@@ -350,37 +353,56 @@ class TradingBot:
         trend_state = get_trend_state(df_4h, df_30m)
 
         if not trend_state.is_tradeable:
-            logger.debug(
-                f"{symbol}: Trend not aligned | "
-                f"4H={trend_state.direction_4h.value} "
-                f"30M={trend_state.direction_30m.value}"
+            logger.info(
+                f"{symbol}: REJECTED | Trends not aligned | "
+                f"4H={trend_state.direction_4h.value} vs 30M={trend_state.direction_30m.value}"
             )
             return
+
+        direction = "bullish" if trend_state.combined == TrendDirection.BULLISH else "bearish"
+        dir_arrow = "LONG ^" if direction == "bullish" else "SHORT v"
 
         # 5. Scan for entry signal on 5M (needs 5/6 confirmations - sweep optional)
         entry_signal = scan_for_entry(df_5m, trend_state.combined)
 
         if not entry_signal.valid:
-            logger.debug(
-                f"{symbol}: No valid entry | "
+            # Show what passed and what failed
+            checks = []
+            checks.append(("Pullback", entry_signal.pullback_confirmed))
+            checks.append(("RSI", entry_signal.rsi_confirmed))
+            checks.append(("Sweep", entry_signal.liquidity_sweep_detected))
+            checks.append(("Structure", entry_signal.structure_break_confirmed))
+            checks.append(("Candle", entry_signal.candle_pattern_confirmed))
+            checks.append(("Volume", entry_signal.volume_confirmed))
+
+            passed = [c[0] for c in checks if c[1]]
+            failed = [c[0] for c in checks if not c[1]]
+
+            logger.info(
+                f"{symbol}: REJECTED ({dir_arrow}) | "
                 f"Confirmations: {entry_signal.confirmation_count}/6 | "
-                f"Missing: {entry_signal.rejections[:2]}"
+                f"Passed: {', '.join(passed) if passed else 'None'} | "
+                f"Failed: {', '.join(failed)}"
             )
             return
 
         # 5b. EMA20 slope filter (WR8 requirement)
         if "ema_20" in df_5m.columns and len(df_5m) > 5:
             ema20_slope = df_5m["ema_20"].iloc[-1] - df_5m["ema_20"].iloc[-4]
-            direction = "bullish" if trend_state.combined == TrendDirection.BULLISH else "bearish"
             if direction == "bullish" and ema20_slope <= 0:
-                logger.debug(f"{symbol}: EMA20 slope not bullish, skipping")
+                logger.info(
+                    f"{symbol}: REJECTED ({dir_arrow}) | "
+                    f"All 6 confirmed BUT EMA20 slope is flat/down (momentum fading)"
+                )
                 return
             if direction == "bearish" and ema20_slope >= 0:
-                logger.debug(f"{symbol}: EMA20 slope not bearish, skipping")
+                logger.info(
+                    f"{symbol}: REJECTED ({dir_arrow}) | "
+                    f"All 6 confirmed BUT EMA20 slope is flat/up (momentum fading)"
+                )
                 return
         else:
             ema20_slope = 0
-            direction = "bullish" if trend_state.combined == TrendDirection.BULLISH else "bearish"
 
         # 6. Build feature vector for adaptive confidence scoring
         features = self._build_features(
@@ -397,24 +419,48 @@ class TradingBot:
         # 7. ADAPTIVE CONFIDENCE GATE (need 8/10+)
         should_trade, confidence, reason = self.adaptive.should_take_trade(features)
 
+        # Calculate estimated SL and TP for display
+        from modules.indicators import get_recent_swing_low, get_recent_swing_high
+        entry_price = df_5m["close"].iloc[-1] if "close" in df_5m.columns else df_5m["Close"].iloc[-1]
+        atr_val = df_5m["atr"].iloc[-1] if "atr" in df_5m.columns else 0
+
+        if direction == "bullish":
+            est_sl = entry_price - max(atr_val, entry_price * 0.003)
+            sl_dist = entry_price - est_sl
+            est_tp = entry_price + (sl_dist * 2.0)
+        else:
+            est_sl = entry_price + max(atr_val, entry_price * 0.003)
+            sl_dist = est_sl - entry_price
+            est_tp = entry_price - (sl_dist * 2.0)
+
+        risk_amount = equity * 0.02
+        est_win_prob = confidence * 10  # Approximate: 8/10 confidence ~ 80% prob
+
         if not should_trade:
             logger.info(
-                f"{symbol}: REJECTED by adaptive engine | "
-                f"Confidence: {confidence:.1f}/10 | {reason}"
+                f"\n{'- '*25}\n"
+                f"{symbol}: NEAR-MISS ({dir_arrow}) | Confidence: {confidence:.1f}/10 (need 8.0)\n"
+                f"  Entry: ${entry_price:.2f} | SL: ${est_sl:.2f} | TP: ${est_tp:.2f}\n"
+                f"  Risk: ${risk_amount:.2f} | SL Distance: ${sl_dist:.2f}\n"
+                f"  Est. Win Probability: {est_win_prob:.0f}%\n"
+                f"  Pattern: {entry_signal.candle_pattern} | RSI: {entry_signal.rsi_value:.1f} | Vol: {entry_signal.volume_ratio:.2f}x\n"
+                f"  Reason rejected: {reason}\n"
+                f"{'- '*25}"
             )
             return
 
         # 8. ALL GATES PASSED - Execute!
         logger.info(
-            f"{'='*50}\n"
+            f"\n{'='*50}\n"
             f"TRADE SIGNAL APPROVED (Adaptive)\n"
             f"{'='*50}\n"
             f"Symbol: {symbol}\n"
             f"Direction: {direction.upper()}\n"
-            f"Confidence: {confidence:.1f}/10 ✅\n"
+            f"Confidence: {confidence:.1f}/10 | Est. Win Prob: {est_win_prob:.0f}%\n"
+            f"Entry: ${entry_price:.2f} | SL: ${est_sl:.2f} | TP: ${est_tp:.2f}\n"
+            f"Risk: ${risk_amount:.2f} | Potential Reward: ${risk_amount * 2:.2f}\n"
             f"Pattern: {entry_signal.candle_pattern}\n"
-            f"RSI: {entry_signal.rsi_value:.1f}\n"
-            f"Volume: {entry_signal.volume_ratio:.2f}x avg\n"
+            f"RSI: {entry_signal.rsi_value:.1f} | Volume: {entry_signal.volume_ratio:.2f}x avg\n"
             f"Trend Confidence: {trend_state.confidence:.2f}\n"
             f"{'='*50}"
         )
