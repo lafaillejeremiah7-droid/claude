@@ -21,7 +21,14 @@ An autonomous Python trading bot for **BTC/USD** and **XAU/USD** that connects t
 
 ### Risk Management
 
-- **2% risk per trade** (position sized by SL distance)
+- **Confidence-scaled risk per trade (1%–3%)** — risk scales with the adaptive
+  confidence score instead of a flat 2%:
+  - confidence `8.0` (the gate) → **1%** risk (`$100` on `$10k`)
+  - confidence `9.0` → **2%** risk (`$200` on `$10k`)
+  - confidence `10.0` → **3%** risk (`$300` on `$10k`)
+  - Formula: `pct = MIN_RISK_PERCENT + ((clamp(conf,8,10)-8)/(10-8)) * (MAX_RISK_PERCENT - MIN_RISK_PERCENT)`
+  - `RISK_PERCENT` (2%) is kept as a fallback for legacy sizing when no
+    confidence score is provided.
 - **Stop Loss**: Wider of swing high/low or 1 ATR(14)
 - **Take Profit**: 1.5R minimum, 2R when trend is strong
 - **Breakeven**: SL moves to entry at 1R profit
@@ -29,6 +36,13 @@ An autonomous Python trading bot for **BTC/USD** and **XAU/USD** that connects t
 - **4% daily drawdown limit** → stops trading for the day
 - **4% weekly drawdown limit** → stops trading for the week
 - **2 consecutive losses** → stops trading for the day
+
+> **Note — higher risk vs the 4% daily drawdown lock:** With confidence-scaled
+> sizing a single high-conviction trade can risk up to 3% of equity. Because the
+> daily drawdown lock trips at 4%, a 3% trade that stops out consumes most of the
+> day's headroom, and combined with an earlier loss it can trigger the daily lock.
+> The bot logs a `WARNING` when a trade's risk exceeds the remaining daily
+> drawdown headroom. The `DAILY_DRAWDOWN_LIMIT` itself is unchanged (still 4%).
 
 ### Session Filter
 
@@ -55,13 +69,17 @@ tradelocker_bot/
 │   ├── entry_signals.py       # Entry signal detection (6 confirmations)
 │   ├── risk_management.py     # Position sizing & risk limits
 │   ├── session_filter.py      # Trading session & news filter
-│   └── trade_manager.py       # Position lifecycle management
+│   ├── trade_manager.py       # Position lifecycle management
+│   └── paper_trading.py       # Paper-trading engine for --dry mode
 ├── logs/                      # Daily log files & stats
 │   ├── bot_YYYY-MM-DD.log
-│   ├── daily_stats.json
-│   └── active_positions.json
+│   ├── daily_stats.json           # live stats
+│   ├── active_positions.json      # live positions
+│   ├── paper_daily_stats.json     # paper stats (--dry)
+│   └── paper_active_positions.json # paper positions (--dry)
 └── journal/                   # Trade journal (JSONL per day)
-    └── journal_YYYY-MM-DD.jsonl
+    ├── journal_YYYY-MM-DD.jsonl        # live journal
+    └── paper_journal_YYYY-MM-DD.jsonl  # paper journal (--dry)
 ```
 
 ---
@@ -132,17 +150,48 @@ python main.py
 
 ## Running Modes
 
-### Dry Run (Recommended First)
+### Dry Run — Paper Trading Engine (Recommended First)
 
 ```bash
 python main.py --dry
 ```
 
-Runs the full analysis pipeline but **does NOT execute trades**. Use this to:
+`--dry` runs the full analysis pipeline and **never places real orders**, but it
+is no longer just logging. It runs a **paper-trading engine** that simulates the
+complete trade lifecycle against **REAL live prices**:
+
+- On an approved signal it opens a **paper position** at the live price, sized
+  off a simulated paper account (`PAPER_STARTING_EQUITY`) using the same
+  confidence-scaled risk as live.
+- Each scan cycle it manages open paper positions against the live price —
+  moving the stop to breakeven at 1R and closing when price crosses the SL/TP.
+- On close it computes PnL, win/loss, and R-multiple, updates paper stats, and
+  feeds the outcome to the adaptive learning engine.
+- It respects the same limits (max trades/day, daily/weekly drawdown, 2
+  consecutive losses) using **paper stats**, so a dry run mirrors real
+  constraints.
+
+All paper activity is logged with a `[PAPER]` prefix (the `[DRY RUN]` intent
+line is still emitted for continuity).
+
+#### Paper files (parallel to the live files, never overwriting them)
+
+| Paper file | Mirrors (live) |
+|---|---|
+| `logs/paper_active_positions.json` | `logs/active_positions.json` |
+| `journal/paper_journal_YYYY-MM-DD.jsonl` | `journal/journal_YYYY-MM-DD.jsonl` |
+| `logs/paper_daily_stats.json` | `logs/daily_stats.json` |
+
+Because the paper files use the exact same schemas as the live files, the
+**dashboard and performance reports can read them by switching to paper mode**
+(e.g. `MODE=paper`) — no other changes required. Live files and live account
+state are completely untouched by dry mode.
+
+Use dry/paper mode to:
 - Verify your credentials work
-- See what signals the bot detects
+- See what signals the bot detects and how they would have played out
 - Confirm session timing is correct
-- Validate the strategy logic
+- Validate the strategy logic and risk sizing with realistic P&L
 
 ### Status Check
 
@@ -211,7 +260,10 @@ All settings are in `config.py` and can be overridden via `.env`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `RISK_PERCENT` | 2.0 | % of equity risked per trade |
+| `RISK_PERCENT` | 2.0 | Fallback fixed % risk (used when no confidence score) |
+| `MIN_RISK_PERCENT` | 1.0 | Risk % at the confidence gate (8.0) |
+| `MAX_RISK_PERCENT` | 3.0 | Risk % at a perfect confidence score (10.0) |
+| `PAPER_STARTING_EQUITY` | 10000.0 | Starting equity for `--dry` paper trading |
 | `MAX_TRADES_PER_DAY` | 2 | Maximum trades allowed per day |
 | `DAILY_DRAWDOWN_LIMIT` | 4.0 | % drawdown to stop daily trading |
 | `WEEKLY_DRAWDOWN_LIMIT` | 4.0 | % drawdown to stop weekly trading |
