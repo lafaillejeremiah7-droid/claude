@@ -61,6 +61,27 @@ def configured_instruments(env: Optional[Dict[str, str]] = None) -> List[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+# Same default the bot uses in config.py (``PAPER_STARTING_EQUITY``).
+DEFAULT_PAPER_STARTING_EQUITY = 10000.0
+
+
+def paper_starting_equity(env: Optional[Dict[str, str]] = None) -> float:
+    """Paper starting equity from ``PAPER_STARTING_EQUITY`` env (default 10000.0).
+
+    Mirrors the variable the bot's paper-trading engine reads so the dashboard
+    shows the same figure before the first paper trade closes. Tolerant: any
+    missing / blank / non-numeric value falls back to the 10000.0 default.
+    """
+    source = env if env is not None else os.environ
+    raw = source.get("PAPER_STARTING_EQUITY")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_PAPER_STARTING_EQUITY
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_PAPER_STARTING_EQUITY
+
+
 def _last_file_mod(reader: FileReader) -> Optional[datetime]:
     """Most recent mtime across monitored bot files (Req 14.1)."""
     paths = [
@@ -160,6 +181,21 @@ def build_snapshot(
 
     # --- account / equity (Req 3) --------------------------------------
     account = select_equity(api_state, daily)
+    if reader.mode == "paper" and account.get("equity_source") != "api":
+        # In paper mode the equity comes from the bot's paper shadow files, not a
+        # live brokerage account. Relabel the daily-stats fallback as "paper" and,
+        # crucially, when the paper stats file does not exist yet (no paper trade
+        # has closed), fall back to the configured paper STARTING equity so the
+        # account panel shows a meaningful figure immediately instead of "none".
+        if account.get("equity_source") == "daily_stats_fallback":
+            account["equity_source"] = "paper"
+        if not account.get("equity_available"):
+            paper_start = paper_starting_equity(env)
+            account["equity"] = paper_start
+            account["equity_available"] = True
+            account["equity_source"] = "paper_start"
+            account["balance"] = paper_start
+            account["balance_available"] = True
 
     # --- pnl (Req 4) ---------------------------------------------------
     starting_equity = daily.get("starting_equity")
@@ -216,6 +252,7 @@ def build_snapshot(
             "confidence": e.get("confidence"),
             "pnl": e.get("pnl"),
             "is_win": e.get("is_win"),
+            "message": e.get("message"),
         })
 
     # --- positions (Req 9) ---------------------------------------------
