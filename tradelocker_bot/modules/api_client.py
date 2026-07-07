@@ -30,6 +30,58 @@ from config import (
 logger = logging.getLogger(__name__)
 
 
+# Map integer-seconds resolutions to the TradeLocker /trade/history API's
+# required STRING resolution codes. The history endpoint returns an HTTP 200
+# error envelope ({"s":"error","errmsg":...}) if it receives integer seconds
+# instead of one of these codes. The three the bot actually uses are
+# 300->"5m", 1800->"30m", 14400->"4H".
+RESOLUTION_CODES = {
+    60: "1m",
+    300: "5m",
+    900: "15m",
+    1800: "30m",
+    3600: "1H",
+    14400: "4H",
+    86400: "1D",
+    604800: "1W",
+}
+
+
+def resolution_to_code(resolution: int) -> Optional[str]:
+    """
+    Convert an integer-seconds resolution to the TradeLocker API's string code.
+
+    Returns the exact mapped code when known (e.g. 300 -> "5m"). For unknown
+    values a clear warning is logged and a best-effort conversion is attempted:
+    exact hour multiples become "<n>H" and sub-hour values become "<n>m".
+    Returns None if no reasonable conversion is possible.
+    """
+    try:
+        seconds = int(resolution)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid resolution {resolution!r}; cannot convert to API code")
+        return None
+
+    code = RESOLUTION_CODES.get(seconds)
+    if code is not None:
+        return code
+
+    logger.warning(
+        f"Resolution {seconds}s not in RESOLUTION_CODES; attempting best-effort "
+        f"conversion to an API resolution code"
+    )
+    if seconds <= 0:
+        return None
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}H"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    logger.warning(
+        f"Could not convert resolution {seconds}s to a valid API code"
+    )
+    return None
+
+
 class TradeLockerClient:
     """
     TradeLocker REST API Client.
@@ -406,16 +458,26 @@ class TradeLockerClient:
             )
             return cached["df"].copy()
 
-        # Calculate timestamps
+        # Calculate timestamps using the integer SECONDS resolution (unchanged).
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - (lookback_bars * resolution * 1000)
+
+        # The API requires a STRING resolution code (e.g. "5m"), NOT integer
+        # seconds. Convert here; bail out if we can't produce a valid code.
+        resolution_code = resolution_to_code(resolution)
+        if resolution_code is None:
+            logger.error(
+                f"Cannot get price history for {symbol}: unsupported resolution "
+                f"{resolution!r} (no valid API resolution code)"
+            )
+            return None
 
         url = f"{self.base_url}/trade/history"
         headers = {"accNum": str(self.acc_num)}
         params = {
             "routeId": route_id,
             "tradableInstrumentId": instrument_id,
-            "resolution": resolution,
+            "resolution": resolution_code,
             "from": start_ms,
             "to": now_ms,
         }
@@ -441,6 +503,18 @@ class TradeLockerClient:
             logger.warning(
                 f"Price history for {symbol} @ {resolution}s: non-JSON response "
                 f"(HTTP {resp.status_code}): {e}"
+            )
+            return None
+
+        # Detect the TradeLocker JSON error envelope. The history endpoint can
+        # return HTTP 200 with {"s":"error","errmsg":...} (e.g. a bad resolution
+        # param). Surface errmsg and return None so API errors are obvious and
+        # are NOT cached.
+        if isinstance(data, dict) and data.get("s") == "error":
+            errmsg = data.get("errmsg", "<no errmsg>")
+            logger.warning(
+                f"Price history API error for {symbol} @ {resolution}s "
+                f"(resolution={resolution_code!r}): {errmsg}"
             )
             return None
 
