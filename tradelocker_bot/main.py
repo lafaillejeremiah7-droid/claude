@@ -35,12 +35,17 @@ Usage:
 import sys
 import os
 import time
+import json
 import signal
 import logging
 import argparse
 import uuid
 from datetime import datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
+
+import pandas as pd
+import numpy as np
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -92,7 +97,12 @@ logger = logging.getLogger("BOT")
 # ========================================
 # CONSTANTS
 # ========================================
-AVOID_HOURS = [15, 16, 17]  # UTC hours with high loss rate (London close)
+# NOTE: AVOID_HOURS is NOT used directly. The actual avoid_hours list comes from
+# the adaptive engine's params (adaptive_config.json) and can be overridden via
+# the AVOID_HOURS env var. This constant is kept only as documentation of the
+# original London-close avoidance rationale.
+# AVOID_HOURS = [15, 16, 17]  # UTC hours with high loss rate (London close)
+
 MAX_ATR_PERCENTILE = 0.80   # Skip when volatility is extreme
 
 
@@ -144,6 +154,11 @@ class TradingBot:
 
         # Track pending trades (for feature recording on close)
         self.pending_features: dict = {}  # position_id -> TradeFeatures
+
+        # Circuit breaker: consecutive fallback-equity cycles counter.
+        # If the API fails to return real equity for 3+ cycles, pause trading.
+        self._consecutive_fallback_equity: int = 0
+        self._FALLBACK_EQUITY_MAX_CYCLES: int = 3
 
         # PERFORMANCE REPORTER - emits daily/weekly/monthly reports on rollover.
         # READ-mostly of the bot's stats; only writes to logs/reports/.
@@ -302,6 +317,21 @@ class TradingBot:
 
         equity = balance["equity"]
 
+        # Circuit breaker: if equity source is "fallback" for too many
+        # consecutive cycles, PAUSE trading to avoid trading on stale/wrong equity.
+        if balance.get("_source") == "fallback":
+            self._consecutive_fallback_equity += 1
+            if self._consecutive_fallback_equity >= self._FALLBACK_EQUITY_MAX_CYCLES:
+                logger.critical(
+                    f"CIRCUIT BREAKER: Account balance API failed for "
+                    f"{self._consecutive_fallback_equity} consecutive cycles. "
+                    f"Trading PAUSED to avoid operating on stale/fictional equity "
+                    f"(${equity:.2f} from env fallback). Resolve API connectivity."
+                )
+                return
+        else:
+            self._consecutive_fallback_equity = 0
+
         # Check if we can trade (risk limits).
         # In dry mode we gate on PAPER stats/equity so the paper run mirrors the
         # real constraints without ever reading or writing the live stats file.
@@ -378,11 +408,42 @@ class TradingBot:
             if pos_id in self.pending_features:
                 features = self.pending_features.pop(pos_id)
 
-                # Get the trade result from the trade manager's journal
-                # Estimate based on last known data
-                # The trade_manager already logged the PnL - we need to update features
-                # For now, use risk manager's last recorded trade
-                # In production, we'd query the API for exact fill prices
+                # Determine trade outcome from risk manager's journal/last close.
+                # The trade_manager already computed pnl in _handle_position_closed
+                # and journaled it. Read the latest CLOSE entry from journal to
+                # extract the actual result and R multiple.
+                try:
+                    from pathlib import Path as _Path
+                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    journal_file = _Path(__file__).parent / "journal" / f"journal_{today}.jsonl"
+                    if journal_file.exists():
+                        # Read the last CLOSE entry matching this position_id
+                        with open(journal_file, "r") as jf:
+                            for line in reversed(jf.readlines()):
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                entry = json.loads(line)
+                                if (entry.get("action") == "CLOSE" and
+                                        entry.get("position_id") == pos_id):
+                                    pnl = float(entry.get("pnl", 0))
+                                    r_multiple = float(entry.get("r_multiple", 0))
+                                    is_win = entry.get("is_win", False)
+                                    if pnl > 0 and is_win:
+                                        features.result = "win"
+                                    elif pnl < 0:
+                                        features.result = "loss"
+                                    else:
+                                        features.result = "breakeven"
+                                    features.pnl_r = r_multiple
+                                    break
+                except Exception as e:
+                    logger.debug(f"Could not read journal for trade outcome: {e}")
+                    # Fallback: if we still don't have a result, estimate from
+                    # risk manager stats (last trade was a win/loss)
+                    if not features.result:
+                        features.result = "loss"  # conservative default
+                        features.pnl_r = 0.0
 
                 # Record in adaptive engine
                 self.adaptive.record_trade(features)
@@ -843,10 +904,6 @@ class TradingBot:
 # ========================================
 
 def main():
-    # Need pandas for feature building
-    global pd
-    import pandas as pd
-
     parser = argparse.ArgumentParser(
         description="TradeLocker Self-Adaptive Trading Bot"
     )

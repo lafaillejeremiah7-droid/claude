@@ -65,12 +65,18 @@ class PaperTradeManager:
 
         self.positions_file = self.logs_dir / "paper_active_positions.json"
         self.stats_file = self.logs_dir / "paper_daily_stats.json"
+        self._cumulative_pnl_file = self.logs_dir / "paper_cumulative_pnl.json"
 
         # Dedicated risk manager persisting to the PAPER stats file so paper
         # locks/drawdown are tracked independently of the live account.
         self.risk_manager = RiskManager(
             risk_percent=risk_percent, stats_file=self.stats_file
         )
+
+        # Cumulative P&L — a running total that NEVER resets on day rollover.
+        # Daily stats still track per-day P&L for risk limits/reports, but equity
+        # uses this all-time total so paper equity doesn't snap back at midnight.
+        self._cumulative_pnl: float = self._load_cumulative_pnl()
 
         self.active_positions: dict[str, ManagedPosition] = {}
         self._load_positions()
@@ -81,8 +87,12 @@ class PaperTradeManager:
 
     @property
     def current_equity(self) -> float:
-        """Paper equity = starting equity + realized paper PnL."""
-        return self.starting_equity + self.risk_manager.daily_stats.realized_pnl
+        """Paper equity = starting equity + cumulative (all-time) realized paper PnL.
+
+        Uses the running total that NEVER resets on day rollover, unlike
+        daily_stats.realized_pnl which resets each UTC midnight.
+        """
+        return self.starting_equity + self._cumulative_pnl
 
     # ========================================
     # POSITION OPENING
@@ -264,7 +274,13 @@ class PaperTradeManager:
         return None
 
     def _check_breakeven(self, position: ManagedPosition, current_price: float):
-        """Move SL to breakeven (entry) once price reaches 1R profit."""
+        """Move SL to breakeven (entry + spread offset) once price reaches 1R profit.
+
+        A small spread offset is applied so the breakeven SL is not exactly at
+        entry (which would be stopped out by normal bid/ask spread oscillation).
+        For BTC-like instruments the offset is ~2 pips; for XAU ~1 pip. This is
+        a conservative approximation — configurable if needed.
+        """
         should_be = self.risk_manager.should_move_to_breakeven(
             entry_price=position.entry_price,
             current_price=current_price,
@@ -274,7 +290,15 @@ class PaperTradeManager:
         if not should_be:
             return
 
-        breakeven_price = position.entry_price
+        # Apply a small spread offset (conservative: ~0.01% of entry price,
+        # roughly 1-2 pips for most instruments) so the SL isn't exactly at
+        # entry where normal spread would trigger it.
+        spread_offset = position.entry_price * 0.0001  # 1 basis point
+        if position.direction == "buy":
+            breakeven_price = position.entry_price + spread_offset
+        else:
+            breakeven_price = position.entry_price - spread_offset
+
         position.is_breakeven = True
         position.stop_loss = breakeven_price
         self._save_positions()
@@ -290,7 +314,8 @@ class PaperTradeManager:
         )
         logger.info(
             f"[PAPER] BREAKEVEN MOVED: {position.symbol} {position.direction} | "
-            f"New SL={breakeven_price:.2f} | Current price={current_price:.2f}"
+            f"New SL={breakeven_price:.2f} (entry + spread offset) | "
+            f"Current price={current_price:.2f}"
         )
 
     def _close_position(self, position: ManagedPosition, exit_price: float) -> dict:
@@ -303,8 +328,12 @@ class PaperTradeManager:
         is_win = pnl > 0
         r_multiple = pnl / position.risk_amount if position.risk_amount > 0 else 0.0
 
-        # Update paper daily/weekly stats.
+        # Update paper daily/weekly stats (for per-day risk limits/reports).
         self.risk_manager.record_trade_closed(pnl, is_win)
+
+        # Update cumulative P&L (never resets — used for equity calculation).
+        self._cumulative_pnl += pnl
+        self._save_cumulative_pnl()
 
         extra = {
             "exit_price": exit_price,
@@ -371,6 +400,8 @@ class PaperTradeManager:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         journal_file = self.journal_dir / f"paper_journal_{today}.jsonl"
 
+        # NOTE: JSONL appends are not fully atomic. On partial writes the
+        # reader skips malformed lines, handling corruption gracefully.
         try:
             with open(journal_file, "a") as f:
                 f.write(json.dumps(entry) + "\n")
@@ -382,12 +413,15 @@ class PaperTradeManager:
     # ========================================
 
     def _save_positions(self):
-        """Save active paper positions to disk (paper file only)."""
+        """Save active paper positions to disk (atomic write via temp + os.replace)."""
         try:
             self.positions_file.parent.mkdir(parents=True, exist_ok=True)
             data = {pos_id: asdict(pos) for pos_id, pos in self.active_positions.items()}
-            with open(self.positions_file, "w") as f:
+            import os as _os
+            tmp_file = self.positions_file.with_suffix(".tmp")
+            with open(tmp_file, "w") as f:
                 json.dump(data, f, indent=2)
+            _os.replace(tmp_file, self.positions_file)
         except Exception as e:
             logger.warning(f"[PAPER] Failed to save positions: {e}")
 
@@ -406,6 +440,35 @@ class PaperTradeManager:
         except Exception as e:
             logger.warning(f"[PAPER] Failed to load positions (starting fresh): {e}")
             self.active_positions = {}
+
+    # ========================================
+    # CUMULATIVE P&L PERSISTENCE
+    # ========================================
+
+    def _load_cumulative_pnl(self) -> float:
+        """Load the all-time cumulative paper PnL from disk."""
+        try:
+            if self._cumulative_pnl_file.exists():
+                with open(self._cumulative_pnl_file, "r") as f:
+                    data = json.load(f)
+                return float(data.get("cumulative_pnl", 0.0))
+        except Exception as e:
+            logger.warning(f"[PAPER] Failed to load cumulative PnL (starting at 0): {e}")
+        return 0.0
+
+    def _save_cumulative_pnl(self):
+        """Persist the all-time cumulative paper PnL to disk."""
+        try:
+            self._cumulative_pnl_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "cumulative_pnl": round(self._cumulative_pnl, 4),
+                "starting_equity": self.starting_equity,
+                "current_equity": self.current_equity,
+            }
+            with open(self._cumulative_pnl_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logger.warning(f"[PAPER] Failed to save cumulative PnL: {e}")
 
     # ========================================
     # STATUS
@@ -429,7 +492,8 @@ class PaperTradeManager:
             "mode": "paper",
             "starting_equity": self.starting_equity,
             "current_equity": self.current_equity,
-            "realized_pnl": self.risk_manager.daily_stats.realized_pnl,
+            "cumulative_pnl": self._cumulative_pnl,
+            "daily_realized_pnl": self.risk_manager.daily_stats.realized_pnl,
             "active_positions": len(self.active_positions),
             "positions": positions_summary,
         }

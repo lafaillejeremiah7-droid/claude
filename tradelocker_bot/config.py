@@ -71,12 +71,15 @@ PREFERRED_RR_RATIO = 2.0  # Preferred risk:reward
 BREAKEVEN_TRIGGER = 1.0  # Move SL to breakeven at 1R profit
 
 # === Session Times (UTC) ===
+# BTCUSD: Extended to near-24h (6-22 UTC) since crypto trades 24/7.
+# We still avoid the low-liquidity dead zone (22-06 UTC) where spreads widen.
+# XAUUSD: Restricted to London + NY sessions (traditional forex hours).
 SESSIONS = {
     "BTCUSD": {
-        "london_open": 7,
-        "london_close": 16,
+        "london_open": 6,
+        "london_close": 22,
         "ny_open": 12,
-        "ny_close": 21,
+        "ny_close": 22,
     },
     "XAUUSD": {
         "london_open": 7,

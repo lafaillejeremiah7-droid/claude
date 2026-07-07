@@ -239,6 +239,7 @@ class TradeLockerClient:
         }
 
         try:
+            self._throttle()
             resp = self.session.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -268,6 +269,7 @@ class TradeLockerClient:
         payload = {"refreshToken": self.refresh_token}
 
         try:
+            self._throttle()
             resp = self.session.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -289,7 +291,15 @@ class TradeLockerClient:
             return self.authenticate()
 
     def ensure_authenticated(self) -> bool:
-        """Ensure we have a valid token, refreshing if needed."""
+        """Ensure we have a valid token, refreshing if needed.
+
+        NOTE: Multiple modules call ensure_authenticated() defensively before
+        each API call (e.g. get_instrument_id -> get_instruments ->
+        ensure_authenticated). This is intentional for safety — the fast path
+        (token still valid) returns immediately with negligible overhead, and
+        it guarantees no method ever makes an unauthenticated request even if
+        called in isolation or a different order.
+        """
         if not self.access_token:
             return self.authenticate()
 
@@ -556,10 +566,21 @@ class TradeLockerClient:
             "expires": time.monotonic() + self._history_ttl(resolution),
         }
 
+        # Evict oldest entries if cache exceeds 50 items (simple LRU-lite).
+        if len(self._history_cache) > 50:
+            oldest_key = min(
+                self._history_cache, key=lambda k: self._history_cache[k]["expires"]
+            )
+            del self._history_cache[oldest_key]
+
         return df
 
     def get_latest_price(self, symbol: str) -> Optional[dict]:
-        """Get latest bid/ask price for a symbol."""
+        """Get latest bid/ask price for a symbol.
+
+        Routed through _request_with_retry for resilience against transient
+        network errors and 429/5xx responses (read-only, safe to retry).
+        """
         if not self.ensure_authenticated():
             return None
 
@@ -576,10 +597,12 @@ class TradeLockerClient:
             "tradableInstrumentId": instrument_id,
         }
 
+        resp = self._request_with_retry("GET", url, headers=headers, params=params)
+        if resp is None or resp.status_code != 200:
+            logger.error(f"Failed to get latest price for {symbol}")
+            return None
+
         try:
-            self._throttle()
-            resp = self.session.get(url, headers=headers, params=params)
-            resp.raise_for_status()
             data = resp.json()
             quotes = data.get("d", {})
 
@@ -588,9 +611,8 @@ class TradeLockerClient:
                 "ask": float(quotes.get("ap", 0)),
                 "mid": (float(quotes.get("bp", 0)) + float(quotes.get("ap", 0))) / 2,
             }
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get latest price for {symbol}: {e}")
+        except (ValueError, KeyError) as e:
+            logger.error(f"Failed to parse latest price for {symbol}: {e}")
             return None
 
     # ========================================
@@ -684,6 +706,7 @@ class TradeLockerClient:
             "freeMargin": fallback_equity,
             "marginLevel": 0,
             "unrealizedPnL": 0,
+            "_source": "fallback",  # Flag for circuit breaker in main.py
         }
 
     # ========================================
@@ -704,6 +727,14 @@ class TradeLockerClient:
     ) -> Optional[str]:
         """
         Place a trading order.
+
+        NOTE: This method intentionally does NOT retry on failure. Retrying
+        order placement on network errors risks duplicate fills (the original
+        order may have been accepted by the exchange despite the client
+        receiving a timeout/disconnect). Only network-level connection errors
+        are caught; we do NOT retry on 429 to avoid double orders. If the
+        request fails, we log clearly and return None so the caller knows no
+        order was confirmed.
 
         Args:
             symbol: Instrument symbol
@@ -752,6 +783,7 @@ class TradeLockerClient:
             payload["takeProfitType"] = take_profit_type
 
         try:
+            self._throttle()
             resp = self.session.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()

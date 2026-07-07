@@ -90,10 +90,14 @@ def test_zero_buffer_uses_event_bounds_only():
     assert blocked is True   # exactly at event start
 
 
-def test_runtime_entry_point_respects_injected_clock():
+def test_runtime_entry_point_respects_injected_clock(monkeypatch):
     # is_near_news_event uses RECURRING_EVENTS for the weekday. 2024-06-04 is a
     # Tuesday, which has the 13:30-14:30 US data window. At 08:00 it must NOT
     # block (the originally reported symptom), and inside the window it must.
+    # Ensure SKIP_NEWS_FILTER is False for this test (the .env may set it True).
+    import config
+    monkeypatch.setattr(config, "SKIP_NEWS_FILTER", False)
+
     blocked_early, _ = is_near_news_event(_utc(8, 0))
     assert blocked_early is False
 
