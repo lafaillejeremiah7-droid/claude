@@ -264,6 +264,10 @@ def is_near_news_event(
     Returns:
         Tuple of (is_blocked, event_description)
     """
+    from config import SKIP_NEWS_FILTER
+    if SKIP_NEWS_FILTER:
+        return False, None
+
     if current_time is None:
         current_time = get_current_utc()
 

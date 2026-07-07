@@ -33,6 +33,7 @@ Usage:
     python main.py --status # Show current status + adaptive engine state
 """
 import sys
+import os
 import time
 import signal
 import logging
@@ -128,6 +129,18 @@ class TradingBot:
             optimize_every_n=20,       # Re-optimize after every 20 trades
             min_trades_to_learn=30,    # Need 30 trades before first adaptation
         )
+
+        # Override adaptive engine's avoid_hours if AVOID_HOURS env var is
+        # explicitly set (including to empty string = trade all hours).
+        if "AVOID_HOURS" in os.environ:
+            from config import AVOID_HOURS_STR
+            if AVOID_HOURS_STR.strip() == "":
+                self.adaptive.params.avoid_hours = []
+            else:
+                self.adaptive.params.avoid_hours = [
+                    int(h.strip()) for h in AVOID_HOURS_STR.split(",") if h.strip()
+                ]
+            logger.info(f"Avoid hours overridden from .env: {self.adaptive.params.avoid_hours}")
 
         # Track pending trades (for feature recording on close)
         self.pending_features: dict = {}  # position_id -> TradeFeatures
