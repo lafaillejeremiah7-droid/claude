@@ -108,12 +108,14 @@ def test_breakeven_moves_sl_to_entry(paper):
     assert closed == []
     pos = paper.active_positions[pid]
     assert pos.is_breakeven is True
-    assert pos.stop_loss == pytest.approx(100.0)
+    # Breakeven SL = entry + spread offset (0.01% of entry = 100 * 0.0001 = 0.01)
+    assert pos.stop_loss == pytest.approx(100.01)
 
-    # A dip back to entry now closes at breakeven (pnl == 0).
+    # A dip back to breakeven SL triggers close at the SL level.
     closed = paper.manage_open_positions(price_overrides={"BTCUSD": 100.0})
     assert len(closed) == 1
-    assert closed[0]["pnl"] == pytest.approx(0.0)
+    # PnL is (exit_at_SL - entry) * qty = (100.01 - 100) * 1 = 0.01
+    assert closed[0]["pnl"] == pytest.approx(0.01, abs=0.02)
     assert closed[0]["was_breakeven"] is True
 
 

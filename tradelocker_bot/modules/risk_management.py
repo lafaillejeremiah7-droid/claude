@@ -216,8 +216,13 @@ class RiskManager:
         sl_distance = abs(entry_price - stop_loss_price)
 
         if sl_distance <= 0:
-            logger.error("Stop loss distance is zero or negative")
-            return min_lot, risk_amount
+            # Zero or negative SL distance = infinite risk. Return 0 size to
+            # signal an invalid setup. Callers (create_trade_setup) should reject.
+            logger.warning(
+                "Position sizing: SL distance is zero or negative — returning "
+                "size=0 (invalid setup, infinite risk)"
+            )
+            return 0, 0.0
 
         # Calculate raw position size
         # risk_amount = position_size * sl_distance
@@ -454,6 +459,24 @@ class RiskManager:
         # Calculate stop loss
         stop_loss, sl_method = self.calculate_stop_loss(df_5m, direction, entry_price)
 
+        # Reject if SL equals entry (zero distance = infinite risk)
+        if abs(stop_loss - entry_price) <= 0:
+            return TradeSetup(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=entry_price,
+                position_size=0,
+                risk_amount=0,
+                risk_reward_ratio=0,
+                sl_distance=0,
+                tp_distance=0,
+                sl_method=sl_method,
+                valid=False,
+                rejection_reason="Zero SL distance",
+            )
+
         # Calculate take profit
         take_profit = self.calculate_take_profit(
             entry_price, stop_loss, direction, trend_confidence
@@ -477,6 +500,24 @@ class RiskManager:
             pip_size, lot_size, min_lot, lot_step,
             risk_percent=risk_percent_override,
         )
+
+        # If position size is 0 (e.g. zero SL distance fallback), reject setup
+        if position_size <= 0:
+            return TradeSetup(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                position_size=0,
+                risk_amount=0,
+                risk_reward_ratio=0,
+                sl_distance=abs(entry_price - stop_loss),
+                tp_distance=abs(take_profit - entry_price),
+                sl_method=sl_method,
+                valid=False,
+                rejection_reason="Position size is zero (invalid SL distance or sizing)",
+            )
 
         # RISK vs DAILY-DRAWDOWN INTERACTION:
         # The 4% daily drawdown lock (DAILY_DRAWDOWN_LIMIT) is enforced separately
@@ -553,6 +594,10 @@ class RiskManager:
     def can_trade(self, current_equity: float) -> tuple[bool, str]:
         """
         Check if trading is allowed based on all risk limits.
+
+        NOTE: All checks operate on in-memory state (self.daily_stats,
+        self.weekly_stats) which is loaded once at init and updated in-memory
+        on every trade open/close. No redundant disk reads happen per cycle.
 
         Checks:
         1. Max trades per day (2)
@@ -657,12 +702,19 @@ class RiskManager:
         logger.info(f"New trading day: {date} | Starting equity: ${equity:.2f}")
 
     def _update_weekly_stats(self, current_equity: float):
-        """Update or reset weekly stats."""
+        """Update or reset weekly stats.
+
+        If the bot was offline for days and restarts mid-week, the weekly
+        starting_equity would be stale. On week rollover we reset to the
+        current actual equity so the weekly drawdown is measured from today's
+        real equity, not an outdated value.
+        """
         now = datetime.now(timezone.utc)
         # Week starts Monday
         week_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
 
         if self.weekly_stats.week_start != week_start:
+            # New ISO week — reset starting equity to the REAL current equity
             self.weekly_stats = WeeklyStats(
                 week_start=week_start,
                 starting_equity=current_equity,
@@ -673,15 +725,19 @@ class RiskManager:
             self.weekly_stats.current_equity = current_equity
 
     def _save_stats(self):
-        """Persist stats to file."""
+        """Persist stats to file (atomic write via temp file + os.replace)."""
         try:
             data = {
                 "daily": asdict(self.daily_stats),
                 "weekly": asdict(self.weekly_stats),
             }
             self.stats_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.stats_file, "w") as f:
+            # Write to a temp file first, then atomically replace to avoid
+            # corruption on crash/power loss during write.
+            tmp_file = self.stats_file.with_suffix(".tmp")
+            with open(tmp_file, "w") as f:
                 json.dump(data, f, indent=2)
+            os.replace(tmp_file, self.stats_file)
         except Exception as e:
             logger.warning(f"Failed to save stats: {e}")
 
@@ -692,11 +748,19 @@ class RiskManager:
                 with open(self.stats_file, "r") as f:
                     data = json.load(f)
 
+                # Use only known fields to avoid TypeError on extra/unknown keys
+                # (forward-compatibility: new fields added later won't crash old code).
                 daily_data = data.get("daily", {})
-                self.daily_stats = DailyStats(**daily_data)
+                daily_fields = {f.name for f in DailyStats.__dataclass_fields__.values()}
+                self.daily_stats = DailyStats(
+                    **{k: v for k, v in daily_data.items() if k in daily_fields}
+                )
 
                 weekly_data = data.get("weekly", {})
-                self.weekly_stats = WeeklyStats(**weekly_data)
+                weekly_fields = {f.name for f in WeeklyStats.__dataclass_fields__.values()}
+                self.weekly_stats = WeeklyStats(
+                    **{k: v for k, v in weekly_data.items() if k in weekly_fields}
+                )
 
                 logger.info(
                     f"Loaded stats: date={self.daily_stats.date}, "

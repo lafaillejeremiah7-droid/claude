@@ -251,17 +251,48 @@ class TradeManager:
                 )
 
     def _handle_position_closed(self, position: ManagedPosition):
-        """Handle a position that has been closed (TP/SL hit or manual)."""
-        # Try to determine outcome
-        # Get latest price to estimate (actual P&L comes from order history)
-        price_data = self.client.get_latest_price(position.symbol)
+        """Handle a position that has been closed (TP/SL hit or manual).
 
-        if price_data:
+        LIMITATION (LIVE MODE): The TradeLocker REST API does not expose the
+        exact fill price on a position close event via the positions endpoint.
+        We estimate the exit price using the latest bid/ask quote. In volatile
+        conditions (BTC can move 0.3%+ in the 60s scan interval), the actual
+        fill may differ from this estimate. The order history endpoint is
+        queried as a best-effort attempt to get the real fill price; if
+        unavailable we fall back to the quote and log a WARNING.
+        """
+        # Attempt to get actual fill price from order history
+        exit_price = None
+        try:
+            order_history = self.client.get_orders_history()
+            for order in order_history:
+                order_pos_id = str(order.get("positionId", ""))
+                if order_pos_id == position.position_id:
+                    fill = order.get("filledPrice") or order.get("avgPrice")
+                    if fill:
+                        exit_price = float(fill)
+                        break
+        except Exception as e:
+            logger.debug(f"Could not query order history for fill price: {e}")
+
+        # Fallback: use latest quote (estimated, not confirmed fill)
+        if exit_price is None:
+            price_data = self.client.get_latest_price(position.symbol)
+            if price_data:
+                if position.direction == "buy":
+                    exit_price = price_data["bid"]
+                else:
+                    exit_price = price_data["ask"]
+                logger.warning(
+                    f"Exit price for {position.position_id} is ESTIMATED from "
+                    f"latest quote (${exit_price:.2f}), not confirmed fill. "
+                    f"Actual fill may differ due to slippage/scan delay."
+                )
+
+        if exit_price is not None:
             if position.direction == "buy":
-                exit_price = price_data["bid"]
                 pnl = (exit_price - position.entry_price) * position.quantity
             else:
-                exit_price = price_data["ask"]
                 pnl = (position.entry_price - exit_price) * position.quantity
 
             is_win = pnl > 0
@@ -391,6 +422,9 @@ class TradeManager:
             entry.update(extra)
 
         # Append to daily journal file
+        # NOTE: JSONL appends are not fully atomic. On partial writes, the
+        # reader (reporting engine) already skips malformed lines, which handles
+        # the corruption case gracefully.
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         journal_file = JOURNAL_DIR / f"journal_{today}.jsonl"
 
@@ -405,15 +439,19 @@ class TradeManager:
     # ========================================
 
     def _save_positions(self):
-        """Save active positions to disk."""
+        """Save active positions to disk (atomic write via temp + os.replace)."""
         try:
             POSITIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
             data = {}
             for pos_id, pos in self.active_positions.items():
                 data[pos_id] = asdict(pos)
 
-            with open(POSITIONS_FILE, "w") as f:
+            import tempfile
+            tmp_file = POSITIONS_FILE.with_suffix(".tmp")
+            with open(tmp_file, "w") as f:
                 json.dump(data, f, indent=2)
+            import os as _os
+            _os.replace(tmp_file, POSITIONS_FILE)
         except Exception as e:
             logger.warning(f"Failed to save positions: {e}")
 

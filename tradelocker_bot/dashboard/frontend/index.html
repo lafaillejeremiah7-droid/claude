@@ -323,6 +323,7 @@ function showCelebrate(f) {
   document.getElementById("celebrate-detail").textContent =
     `${f.symbol} ${typeof f.pnl === "number" ? money(f.pnl) : ""}`;
   el.style.display = "flex";
+  // Clear after animation completes to free DOM resources
   setTimeout(() => { el.style.display = "none"; }, 3500);
 }
 
