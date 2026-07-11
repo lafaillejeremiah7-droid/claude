@@ -218,11 +218,15 @@ class XAUUSDBot:
         # ---- STEP 5: Check Daily Reset ----
         self._check_daily_reset(timestamp)
 
-        # ---- STEP 6: State Machine Transition ----
+        # ---- STEP 6: Reset entry score before transition ----
+        # (prevents stale score from triggering ENTRY→POSITION_ACTIVE)
+        self.context.entry_score = 0.0
+
+        # ---- STEP 7: State Machine Transition ----
         new_state = self.state_machine.try_transition(self.context)
         current_state = self.state_machine.get_state()
 
-        # ---- STEP 7: Execute State Logic ----
+        # ---- STEP 8: Execute State Logic ----
         if current_state == State.ENTRY_SEARCH:
             self._execute_entry_search(dxy_closes)
 

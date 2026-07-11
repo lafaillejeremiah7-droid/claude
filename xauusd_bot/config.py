@@ -102,11 +102,13 @@ RISK = {
     "max_risk_per_trade": 0.01,     # 1% of account per trade
     "max_daily_loss": 0.03,         # 3% daily loss → shutdown
     "max_concurrent_positions": 1,   # Only 1 gold position at a time
-    "min_risk_reward": 2.0,         # Minimum 1:2 RR
+    "min_risk_reward": 1.5,         # Minimum 1:1.5 RR
     "trailing_stop_activation": 1.0, # Activate trailing after 1:1 RR achieved
     "trailing_stop_distance_atr": 1.0,  # Trail by 1x ATR
     "max_spread_pips": 30,          # Don't trade if spread > 30 pips ($0.30)
     "slippage_buffer_pips": 5,      # Account for 5 pips slippage
+    "atr_sl_multiplier": 1.5,       # SL = 1.5x ATR
+    "atr_tp_multiplier": 3.0,       # TP = 3.0x ATR (1:2 RR)
 }
 
 # ============================================================
