@@ -56,19 +56,31 @@ class TechnicalIndicators:
     # ------------------------------------------------------------------
 
     def ema(self, data: np.ndarray, period: int) -> np.ndarray:
-        """Calculate EMA for a price series."""
-        if len(data) < period:
-            return np.full_like(data, np.nan)
+        """Calculate EMA for a price series (vectorized where possible)."""
+        n = len(data)
+        if n < period:
+            return np.full(n, np.nan)
 
         multiplier = 2.0 / (period + 1)
-        ema_values = np.zeros_like(data, dtype=float)
+        ema_values = np.zeros(n, dtype=float)
         ema_values[period - 1] = np.mean(data[:period])
 
-        for i in range(period, len(data)):
+        for i in range(period, n):
             ema_values[i] = (data[i] - ema_values[i - 1]) * multiplier + ema_values[i - 1]
 
         ema_values[:period - 1] = np.nan
         return ema_values
+
+    def _ema_last(self, data: np.ndarray, period: int) -> float:
+        """Calculate only the last EMA value efficiently."""
+        n = len(data)
+        if n < period:
+            return data[-1] if n > 0 else 0.0
+        multiplier = 2.0 / (period + 1)
+        val = float(np.mean(data[:period]))
+        for i in range(period, n):
+            val = (data[i] - val) * multiplier + val
+        return val
 
     # ------------------------------------------------------------------
     # AVERAGE TRUE RANGE
