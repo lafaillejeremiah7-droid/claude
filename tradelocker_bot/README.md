@@ -21,7 +21,14 @@ An autonomous Python trading bot for **BTC/USD** and **XAU/USD** that connects t
 
 ### Risk Management
 
-- **2% risk per trade** (position sized by SL distance)
+- **Confidence-scaled risk per trade (1%–3%)** — risk scales with the adaptive
+  confidence score instead of a flat 2%:
+  - confidence `8.0` (the gate) → **1%** risk (`$100` on `$10k`)
+  - confidence `9.0` → **2%** risk (`$200` on `$10k`)
+  - confidence `10.0` → **3%** risk (`$300` on `$10k`)
+  - Formula: `pct = MIN_RISK_PERCENT + ((clamp(conf,8,10)-8)/(10-8)) * (MAX_RISK_PERCENT - MIN_RISK_PERCENT)`
+  - `RISK_PERCENT` (2%) is kept as a fallback for legacy sizing when no
+    confidence score is provided.
 - **Stop Loss**: Wider of swing high/low or 1 ATR(14)
 - **Take Profit**: 1.5R minimum, 2R when trend is strong
 - **Breakeven**: SL moves to entry at 1R profit
@@ -29,6 +36,13 @@ An autonomous Python trading bot for **BTC/USD** and **XAU/USD** that connects t
 - **4% daily drawdown limit** → stops trading for the day
 - **4% weekly drawdown limit** → stops trading for the week
 - **2 consecutive losses** → stops trading for the day
+
+> **Note — higher risk vs the 4% daily drawdown lock:** With confidence-scaled
+> sizing a single high-conviction trade can risk up to 3% of equity. Because the
+> daily drawdown lock trips at 4%, a 3% trade that stops out consumes most of the
+> day's headroom, and combined with an earlier loss it can trigger the daily lock.
+> The bot logs a `WARNING` when a trade's risk exceeds the remaining daily
+> drawdown headroom. The `DAILY_DRAWDOWN_LIMIT` itself is unchanged (still 4%).
 
 ### Session Filter
 
@@ -55,13 +69,31 @@ tradelocker_bot/
 │   ├── entry_signals.py       # Entry signal detection (6 confirmations)
 │   ├── risk_management.py     # Position sizing & risk limits
 │   ├── session_filter.py      # Trading session & news filter
-│   └── trade_manager.py       # Position lifecycle management
+│   ├── trade_manager.py       # Position lifecycle management
+│   ├── paper_trading.py       # Paper-trading engine for --dry mode
+│   └── reporting.py           # Performance reporting engine (daily/weekly/monthly)
+├── dashboard/                 # Read-only live dashboard (FastAPI backend + frontend)
 ├── logs/                      # Daily log files & stats
 │   ├── bot_YYYY-MM-DD.log
-│   ├── daily_stats.json
-│   └── active_positions.json
-└── journal/                   # Trade journal (JSONL per day)
-    └── journal_YYYY-MM-DD.jsonl
+│   ├── daily_stats.json            # live stats
+│   ├── active_positions.json       # live positions
+│   ├── adaptive_config.json
+│   ├── trade_features.jsonl
+│   ├── paper_daily_stats.json      # paper stats (--dry)
+│   ├── paper_active_positions.json # paper positions (--dry)
+│   └── reports/               # Machine-readable performance reports (see below)
+│       ├── daily_YYYY-MM-DD.json
+│       ├── weekly_YYYY-Www.json
+│       ├── monthly_YYYY-MM.json
+│       ├── history.jsonl
+│       └── .report_state.json
+├── journal/                   # Trade journal (JSONL per day)
+│   ├── journal_YYYY-MM-DD.jsonl        # live journal
+│   └── paper_journal_YYYY-MM-DD.jsonl  # paper journal (--dry)
+└── tests/                     # Pytest suite
+    ├── test_reporting.py
+    ├── test_confidence_sizing.py
+    └── test_paper_trading.py
 ```
 
 ---
@@ -132,17 +164,48 @@ python main.py
 
 ## Running Modes
 
-### Dry Run (Recommended First)
+### Dry Run — Paper Trading Engine (Recommended First)
 
 ```bash
 python main.py --dry
 ```
 
-Runs the full analysis pipeline but **does NOT execute trades**. Use this to:
+`--dry` runs the full analysis pipeline and **never places real orders**, but it
+is no longer just logging. It runs a **paper-trading engine** that simulates the
+complete trade lifecycle against **REAL live prices**:
+
+- On an approved signal it opens a **paper position** at the live price, sized
+  off a simulated paper account (`PAPER_STARTING_EQUITY`) using the same
+  confidence-scaled risk as live.
+- Each scan cycle it manages open paper positions against the live price —
+  moving the stop to breakeven at 1R and closing when price crosses the SL/TP.
+- On close it computes PnL, win/loss, and R-multiple, updates paper stats, and
+  feeds the outcome to the adaptive learning engine.
+- It respects the same limits (max trades/day, daily/weekly drawdown, 2
+  consecutive losses) using **paper stats**, so a dry run mirrors real
+  constraints.
+
+All paper activity is logged with a `[PAPER]` prefix (the `[DRY RUN]` intent
+line is still emitted for continuity).
+
+#### Paper files (parallel to the live files, never overwriting them)
+
+| Paper file | Mirrors (live) |
+|---|---|
+| `logs/paper_active_positions.json` | `logs/active_positions.json` |
+| `journal/paper_journal_YYYY-MM-DD.jsonl` | `journal/journal_YYYY-MM-DD.jsonl` |
+| `logs/paper_daily_stats.json` | `logs/daily_stats.json` |
+
+Because the paper files use the exact same schemas as the live files, the
+**dashboard and performance reports can read them by switching to paper mode**
+(e.g. `MODE=paper`) — no other changes required. Live files and live account
+state are completely untouched by dry mode.
+
+Use dry/paper mode to:
 - Verify your credentials work
-- See what signals the bot detects
+- See what signals the bot detects and how they would have played out
 - Confirm session timing is correct
-- Validate the strategy logic
+- Validate the strategy logic and risk sizing with realistic P&L
 
 ### Status Check
 
@@ -211,7 +274,10 @@ All settings are in `config.py` and can be overridden via `.env`:
 
 | Setting | Default | Description |
 |---|---|---|
-| `RISK_PERCENT` | 2.0 | % of equity risked per trade |
+| `RISK_PERCENT` | 2.0 | Fallback fixed % risk (used when no confidence score) |
+| `MIN_RISK_PERCENT` | 1.0 | Risk % at the confidence gate (8.0) |
+| `MAX_RISK_PERCENT` | 3.0 | Risk % at a perfect confidence score (10.0) |
+| `PAPER_STARTING_EQUITY` | 10000.0 | Starting equity for `--dry` paper trading |
 | `MAX_TRADES_PER_DAY` | 2 | Maximum trades allowed per day |
 | `DAILY_DRAWDOWN_LIMIT` | 4.0 | % drawdown to stop daily trading |
 | `WEEKLY_DRAWDOWN_LIMIT` | 4.0 | % drawdown to stop weekly trading |
@@ -232,6 +298,92 @@ Every trade action is logged to `journal/journal_YYYY-MM-DD.jsonl`:
 - Exit details with P&L and R-multiple
 
 Review these regularly to assess strategy performance.
+
+---
+
+## Performance Reports
+
+The bot includes a **performance reporting engine** (`modules/reporting.py`,
+`PerformanceReporter`) that produces both human-readable log summaries and
+machine-readable JSON files. All times are **UTC**.
+
+Reports are emitted automatically on time-boundary rollovers. Once per scan
+cycle the bot calls `reporter.maybe_emit(now_utc)`, which detects whether a
+day, week, or month has rolled over since the last report and emits whatever is
+due. Detection is robust to the bot being offline across a boundary — the
+pending report fires on the next start. The last-reported periods are tracked
+in `logs/reports/.report_state.json`, so no report is ever emitted twice.
+
+The reporter is **read-mostly**: it reads the bot's existing state
+(`daily_stats.json` / weekly stats, `adaptive_config.json`,
+`trade_features.jsonl`, and the per-day `journal/*.jsonl` files) and only ever
+**writes inside `logs/reports/`**. It never overwrites the bot's live state.
+
+### What is produced
+
+| Report | Trigger | Contents |
+|---|---|---|
+| **Daily** | UTC day rollover | P&L ($ and %), trades taken, W/L, win rate, best & worst trade, average R |
+| **Weekly** | UTC (ISO) week rollover | Weekly P&L ($ and %), total trades, win rate, average R, max drawdown, plus a **"What to improve"** self-adaptation section |
+| **Monthly** | UTC month rollover | Monthly P&L ($ and %), total trades, win rate, best & worst day |
+
+Example daily log line:
+
+```
+=== DAILY REPORT 2024-06-10 UTC ===  P&L: +$142.30 (+1.42%) | 2 trades | 1W/1L (50%) | Best +$210 | Worst -$68 | Avg R 0.34
+```
+
+### "What to improve" (weekly self-adaptation insight)
+
+The weekly report derives concrete suggestions from the adaptive engine data
+and the week's trades — nothing is hard-coded. Insights only surface when the
+sample size is meaningful. Examples of the kinds of bullets generated:
+
+```
+IMPROVE: - Win rate in 08:00-09:00 UTC is 22% (12 trades) - consider avoid_hours.
+IMPROVE: - 'doji' pattern avg R -0.4 over 9 trades (win rate 33%) - down-weight.
+IMPROVE: - Low-confidence trades [8.0-8.5) win 30% vs 80% for [9.0-10.0) - consider raising min_confidence.
+```
+
+Sources analysed: worst-performing UTC hours, lowest-performing candle
+patterns/features, confidence-band win rates, drawdown / consecutive-loss lock
+incidents, and the adaptive engine's win-rate/avg-R trend versus the prior week.
+
+### Where the files live (for the dashboard)
+
+The dashboard reads the `logs/reports/` directory:
+
+- `daily_YYYY-MM-DD.json` — one file per day
+- `weekly_YYYY-Www.json` — one file per ISO week
+- `monthly_YYYY-MM.json` — one file per month
+- `history.jsonl` — one appended line per daily report (used for weekly/monthly aggregation)
+
+### Live vs paper (mode-aware)
+
+`PerformanceReporter` is mode-aware: it accepts a stats source so it can report
+on **live** stats (default: `daily_stats.json` / weekly) or **paper** stats
+once paper-trading files exist. Missing paper files never hard-fail — the
+reporter degrades gracefully.
+
+### Configuration
+
+| Setting | Default | Description |
+|---|---|---|
+| `REPORTS_DIR` | `logs/reports` | Directory for machine-readable reports |
+| `REPORT_MIN_SAMPLE` | 5 | Min trades in a bucket before an improvement suggestion surfaces |
+| `REPORT_WEAK_WIN_RATE` | 0.40 | Win-rate threshold below which an hour/pattern is flagged |
+
+### Tests
+
+```bash
+pip install pytest hypothesis
+python -m pytest tests/test_reporting.py -q
+```
+
+The suite covers P&L/return math (including the `starting_equity == 0` → 0.00%
+edge case), best/worst extraction, hour-bucket and confidence-band win rates,
+the improvement-suggestion generator, and rollover detection (day-only,
+day+week, day+week+month, and no double-emit), plus property-based invariants.
 
 ---
 

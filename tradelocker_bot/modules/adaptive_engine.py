@@ -51,7 +51,7 @@ class TradeFeatures:
     # Outcome
     result: str = ""  # 'win', 'loss', 'breakeven'
     pnl_r: float = 0.0
-    max_favorable_r: float = 0.0
+    max_favorable_r: float = 0.0  # Future use: max favorable excursion tracking
     
     # Entry features (what conditions existed at entry)
     hour_utc: int = 0
@@ -66,14 +66,16 @@ class TradeFeatures:
     slope_30m_gap_pct: float = 0.0  # 30M EMA50 vs EMA200 gap
     candle_pattern: str = ""
     candle_body_ratio: float = 0.0  # body/range of entry candle
+    # Future use: populated when pullback-depth and structure-break analysis is
+    # integrated with the feature extraction pipeline.
     pullback_depth_pct: float = 0.0  # how deep was the pullback
     structure_break_strength: float = 0.0  # how far past the structure level
     had_liquidity_sweep: bool = False
-    bars_since_last_trade: int = 0  # avoid clustering
+    bars_since_last_trade: int = 0  # Future use: avoid clustering
     
     # Derived features
     trend_alignment_score: float = 0.0  # 0-1 how well all TFs agree
-    momentum_score: float = 0.0  # composite momentum measure
+    momentum_score: float = 0.0  # Future use: composite momentum measure
 
 
 # ============================================================
@@ -631,15 +633,26 @@ class AdaptiveEngine:
         return score
     
     def _blend_params(self, proposed: AdaptiveParams, blend_factor: float = 0.3):
-        """Gradually blend proposed params into current (prevents wild swings)."""
-        
+        """Gradually blend proposed params into current (prevents wild swings).
+
+        Special case: if the current value is 0 and the proposed value is
+        non-zero, multiplicative blending would keep it at 0 forever. In that
+        case we adopt the proposed value directly (additive blending).
+        """
+
         def blend(current, proposed_val, bounds_key=None):
-            blended = current * (1 - blend_factor) + proposed_val * blend_factor
+            # Handle zero-valued parameters: multiplicative blending can't
+            # escape zero, so adopt the proposed value directly.
+            if current == 0 and proposed_val != 0:
+                blended = proposed_val * blend_factor
+            else:
+                blended = current * (1 - blend_factor) + proposed_val * blend_factor
             if bounds_key and bounds_key in PARAM_BOUNDS:
                 blended = np.clip(blended, *PARAM_BOUNDS[bounds_key])
-            # Enforce max shift
-            max_shift = abs(current) * MAX_SHIFT_PCT
-            blended = np.clip(blended, current - max_shift, current + max_shift)
+            # Enforce max shift (skip if current is 0 — no meaningful % shift)
+            if current != 0:
+                max_shift = abs(current) * MAX_SHIFT_PCT
+                blended = np.clip(blended, current - max_shift, current + max_shift)
             return round(blended, 4)
         
         self.params.rsi_long_min = blend(self.params.rsi_long_min, proposed.rsi_long_min, 'rsi_long_min')
@@ -710,7 +723,11 @@ class AdaptiveEngine:
             if ADAPTIVE_CONFIG_FILE.exists():
                 with open(ADAPTIVE_CONFIG_FILE, 'r') as f:
                     data = json.load(f)
-                self.params = AdaptiveParams(**data)
+                # Filter to known fields only to avoid TypeError on extra keys
+                # (forward-compatibility with newer config versions).
+                known_fields = {f.name for f in AdaptiveParams.__dataclass_fields__.values()}
+                filtered = {k: v for k, v in data.items() if k in known_fields}
+                self.params = AdaptiveParams(**filtered)
                 logger.info(
                     f"ADAPTIVE: Loaded params | Cycles: {self.params.optimization_cycles} | "
                     f"WR: {self.params.current_win_rate:.1f}% | "

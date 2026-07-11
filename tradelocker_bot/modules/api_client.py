@@ -7,15 +7,79 @@ Uses the official tradelocker Python library as base with
 additional custom methods for advanced functionality.
 """
 import time
+import random
 import logging
 import requests
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional
 
-from config import BASE_URL, TL_EMAIL, TL_PASSWORD, TL_SERVER
+from config import (
+    BASE_URL,
+    TL_EMAIL,
+    TL_PASSWORD,
+    TL_SERVER,
+    API_MIN_REQUEST_INTERVAL,
+    API_MAX_RETRIES,
+    API_BACKOFF_BASE,
+    API_BACKOFF_MAX,
+    HISTORY_CACHE_TTL,
+    HISTORY_CACHE_TTL_DEFAULT,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# Map integer-seconds resolutions to the TradeLocker /trade/history API's
+# required STRING resolution codes. The history endpoint returns an HTTP 200
+# error envelope ({"s":"error","errmsg":...}) if it receives integer seconds
+# instead of one of these codes. The three the bot actually uses are
+# 300->"5m", 1800->"30m", 14400->"4H".
+RESOLUTION_CODES = {
+    60: "1m",
+    300: "5m",
+    900: "15m",
+    1800: "30m",
+    3600: "1H",
+    14400: "4H",
+    86400: "1D",
+    604800: "1W",
+}
+
+
+def resolution_to_code(resolution: int) -> Optional[str]:
+    """
+    Convert an integer-seconds resolution to the TradeLocker API's string code.
+
+    Returns the exact mapped code when known (e.g. 300 -> "5m"). For unknown
+    values a clear warning is logged and a best-effort conversion is attempted:
+    exact hour multiples become "<n>H" and sub-hour values become "<n>m".
+    Returns None if no reasonable conversion is possible.
+    """
+    try:
+        seconds = int(resolution)
+    except (ValueError, TypeError):
+        logger.warning(f"Invalid resolution {resolution!r}; cannot convert to API code")
+        return None
+
+    code = RESOLUTION_CODES.get(seconds)
+    if code is not None:
+        return code
+
+    logger.warning(
+        f"Resolution {seconds}s not in RESOLUTION_CODES; attempting best-effort "
+        f"conversion to an API resolution code"
+    )
+    if seconds <= 0:
+        return None
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}H"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    logger.warning(
+        f"Could not convert resolution {seconds}s to a valid API code"
+    )
+    return None
 
 
 class TradeLockerClient:
@@ -44,6 +108,123 @@ class TradeLockerClient:
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
 
+        # --- Rate-limiting / resilience state ---
+        # Timestamp (monotonic) of the last outbound TradeLocker HTTP request,
+        # used by _throttle() to enforce a minimum spacing between calls.
+        self._last_request_ts: float = 0.0
+        self._min_request_interval: float = API_MIN_REQUEST_INTERVAL
+        self._max_retries: int = API_MAX_RETRIES
+        self._backoff_base: float = API_BACKOFF_BASE
+        self._backoff_max: float = API_BACKOFF_MAX
+        # Short-lived price-history bar cache:
+        #   key   -> (tradableInstrumentId, resolution)
+        #   value -> {"df": <DataFrame copy>, "expires": <monotonic ts>}
+        self._history_cache: dict = {}
+
+    # ========================================
+    # RATE LIMITING / RESILIENCE HELPERS
+    # ========================================
+
+    def _throttle(self) -> None:
+        """
+        Sleep just enough to keep at least ``_min_request_interval`` seconds
+        between consecutive outbound TradeLocker HTTP requests. This protects
+        the DEMO server's aggressive per-second rate limit (HTTP 429).
+        """
+        interval = self._min_request_interval
+        if interval <= 0:
+            self._last_request_ts = time.monotonic()
+            return
+
+        now = time.monotonic()
+        elapsed = now - self._last_request_ts
+        if 0 <= elapsed < interval:
+            time.sleep(interval - elapsed)
+        self._last_request_ts = time.monotonic()
+
+    def _history_ttl(self, resolution: int) -> float:
+        """Return the cache TTL (seconds) for a given resolution."""
+        return HISTORY_CACHE_TTL.get(int(resolution), HISTORY_CACHE_TTL_DEFAULT)
+
+    def _compute_backoff(self, attempt: int, retry_after: Optional[str]) -> float:
+        """
+        Compute how long to sleep before the next retry.
+
+        Honors the ``Retry-After`` response header when present (seconds form),
+        otherwise uses exponential backoff: base * 2**attempt, capped at
+        ``_backoff_max``, plus a small random jitter to avoid thundering herds.
+        ``attempt`` is 0-based (0 for the first retry).
+        """
+        if retry_after:
+            try:
+                wait = float(retry_after)
+                if wait >= 0:
+                    return min(wait, self._backoff_max)
+            except (ValueError, TypeError):
+                pass  # Non-numeric (HTTP-date) Retry-After: fall back to backoff.
+
+        wait = self._backoff_base * (2 ** attempt)
+        wait = min(wait, self._backoff_max)
+        jitter = random.uniform(0, self._backoff_base * 0.25)
+        return wait + jitter
+
+    def _request_with_retry(self, method: str, url: str, **kwargs) -> Optional[requests.Response]:
+        """
+        Perform a throttled HTTP request with exponential-backoff retries on
+        transient failures (HTTP 429 and 5xx).
+
+        Retries up to ``_max_retries`` times, honoring ``Retry-After`` on 429.
+        On persistent failure (or a connection error) returns the last response
+        if one exists, otherwise ``None``. Non-transient HTTP responses (e.g.
+        200, 4xx other than 429) are returned immediately for the caller to
+        handle.
+        """
+        last_resp: Optional[requests.Response] = None
+        total_attempts = self._max_retries + 1
+
+        for attempt in range(total_attempts):
+            self._throttle()
+            try:
+                resp = self.session.request(method, url, **kwargs)
+            except requests.exceptions.RequestException as e:
+                # Network-level error: back off and retry if attempts remain.
+                if attempt < total_attempts - 1:
+                    wait = self._compute_backoff(attempt, None)
+                    logger.warning(
+                        f"Request error ({e.__class__.__name__}) on {url}; "
+                        f"retry {attempt + 1}/{self._max_retries} in {wait:.2f}s"
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.error(f"Request failed after retries: {e}")
+                return None
+
+            last_resp = resp
+
+            # Retry on 429 (rate limited) and 5xx (server errors).
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < total_attempts - 1:
+                    retry_after = resp.headers.get("Retry-After")
+                    wait = self._compute_backoff(attempt, retry_after)
+                    logger.warning(
+                        f"HTTP {resp.status_code} on {url}; backing off {wait:.2f}s "
+                        f"(retry {attempt + 1}/{self._max_retries}"
+                        + (f", Retry-After={retry_after}" if retry_after else "")
+                        + ")"
+                    )
+                    time.sleep(wait)
+                    continue
+                logger.warning(
+                    f"HTTP {resp.status_code} on {url}; exhausted "
+                    f"{self._max_retries} retries"
+                )
+                return resp
+
+            # Success or a non-transient status: hand back to caller.
+            return resp
+
+        return last_resp
+
     # ========================================
     # AUTHENTICATION
     # ========================================
@@ -58,6 +239,7 @@ class TradeLockerClient:
         }
 
         try:
+            self._throttle()
             resp = self.session.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -87,6 +269,7 @@ class TradeLockerClient:
         payload = {"refreshToken": self.refresh_token}
 
         try:
+            self._throttle()
             resp = self.session.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
@@ -108,7 +291,15 @@ class TradeLockerClient:
             return self.authenticate()
 
     def ensure_authenticated(self) -> bool:
-        """Ensure we have a valid token, refreshing if needed."""
+        """Ensure we have a valid token, refreshing if needed.
+
+        NOTE: Multiple modules call ensure_authenticated() defensively before
+        each API call (e.g. get_instrument_id -> get_instruments ->
+        ensure_authenticated). This is intentional for safety — the fast path
+        (token still valid) returns immediately with negligible overhead, and
+        it guarantees no method ever makes an unauthenticated request even if
+        called in isolation or a different order.
+        """
         if not self.access_token:
             return self.authenticate()
 
@@ -265,49 +456,131 @@ class TradeLockerClient:
             logger.error(f"Cannot get price history: instrument/route not found for {symbol}")
             return None
 
-        # Calculate timestamps
+        # --- Short-lived bar cache -------------------------------------------
+        # Keyed by (tradableInstrumentId, resolution). Return a copy of cached
+        # bars while fresh so the bot doesn't refetch identical bars every 60s.
+        cache_key = (instrument_id, int(resolution))
+        cached = self._history_cache.get(cache_key)
+        if cached is not None and time.monotonic() < cached["expires"]:
+            logger.debug(
+                f"Price history cache HIT for {symbol} @ {resolution}s "
+                f"(age within {self._history_ttl(resolution):.0f}s TTL)"
+            )
+            return cached["df"].copy()
+
+        # Calculate timestamps using the integer SECONDS resolution (unchanged).
         now_ms = int(time.time() * 1000)
         start_ms = now_ms - (lookback_bars * resolution * 1000)
+
+        # The API requires a STRING resolution code (e.g. "5m"), NOT integer
+        # seconds. Convert here; bail out if we can't produce a valid code.
+        resolution_code = resolution_to_code(resolution)
+        if resolution_code is None:
+            logger.error(
+                f"Cannot get price history for {symbol}: unsupported resolution "
+                f"{resolution!r} (no valid API resolution code)"
+            )
+            return None
 
         url = f"{self.base_url}/trade/history"
         headers = {"accNum": str(self.acc_num)}
         params = {
             "routeId": route_id,
             "tradableInstrumentId": instrument_id,
-            "resolution": resolution,
+            "resolution": resolution_code,
             "from": start_ms,
             "to": now_ms,
         }
 
-        try:
-            resp = self.session.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-
-            bars = data.get("d", {}).get("bars", [])
-            if not bars:
-                logger.warning(f"No price data returned for {symbol} @ {resolution}s")
-                return None
-
-            df = pd.DataFrame(bars)
-            # TradeLocker returns: t(timestamp), o(open), h(high), l(low), c(close), v(volume)
-            df.rename(
-                columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"},
-                inplace=True,
+        resp = self._request_with_retry("GET", url, headers=headers, params=params)
+        if resp is None:
+            logger.warning(
+                f"Failed to get price history for {symbol} @ {resolution}s "
+                f"(no response after retries)"
             )
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-            for col in ["open", "high", "low", "close", "volume"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce")
-
-            return df.sort_values("timestamp").reset_index(drop=True)
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get price history for {symbol}: {e}")
             return None
 
+        if resp.status_code != 200:
+            logger.warning(
+                f"Failed to get price history for {symbol} @ {resolution}s: "
+                f"HTTP {resp.status_code}"
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            logger.warning(
+                f"Price history for {symbol} @ {resolution}s: non-JSON response "
+                f"(HTTP {resp.status_code}): {e}"
+            )
+            return None
+
+        # Detect the TradeLocker JSON error envelope. The history endpoint can
+        # return HTTP 200 with {"s":"error","errmsg":...} (e.g. a bad resolution
+        # param). Surface errmsg and return None so API errors are obvious and
+        # are NOT cached.
+        if isinstance(data, dict) and data.get("s") == "error":
+            errmsg = data.get("errmsg", "<no errmsg>")
+            logger.warning(
+                f"Price history API error for {symbol} @ {resolution}s "
+                f"(resolution={resolution_code!r}): {errmsg}"
+            )
+            return None
+
+        bars = (data.get("d", {}).get("bars") or data.get("d", {}).get("barDetails") or []) if isinstance(data, dict) else []
+        if not bars:
+            # Better diagnostics: distinguish a genuinely empty payload from a
+            # masked throttle. Log status + top-level JSON keys + a short,
+            # secret-free snippet of the body.
+            top_keys = list(data.keys()) if isinstance(data, dict) else type(data).__name__
+            inner_keys = (
+                list(data.get("d", {}).keys())
+                if isinstance(data, dict) and isinstance(data.get("d"), dict)
+                else None
+            )
+            snippet = resp.text[:200].replace("\n", " ") if resp.text else ""
+            logger.warning(
+                f"No price data returned for {symbol} @ {resolution}s | "
+                f"HTTP {resp.status_code} | top_keys={top_keys} | "
+                f"d_keys={inner_keys} | body[:200]={snippet!r}"
+            )
+            return None
+
+        df = pd.DataFrame(bars)
+        # TradeLocker returns: t(timestamp), o(open), h(high), l(low), c(close), v(volume)
+        df.rename(
+            columns={"t": "timestamp", "o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"},
+            inplace=True,
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+        for col in ["open", "high", "low", "close", "volume"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # Store a copy in the cache with a resolution-appropriate TTL.
+        self._history_cache[cache_key] = {
+            "df": df.copy(),
+            "expires": time.monotonic() + self._history_ttl(resolution),
+        }
+
+        # Evict oldest entries if cache exceeds 50 items (simple LRU-lite).
+        if len(self._history_cache) > 50:
+            oldest_key = min(
+                self._history_cache, key=lambda k: self._history_cache[k]["expires"]
+            )
+            del self._history_cache[oldest_key]
+
+        return df
+
     def get_latest_price(self, symbol: str) -> Optional[dict]:
-        """Get latest bid/ask price for a symbol."""
+        """Get latest bid/ask price for a symbol.
+
+        Routed through _request_with_retry for resilience against transient
+        network errors and 429/5xx responses (read-only, safe to retry).
+        """
         if not self.ensure_authenticated():
             return None
 
@@ -324,9 +597,12 @@ class TradeLockerClient:
             "tradableInstrumentId": instrument_id,
         }
 
+        resp = self._request_with_retry("GET", url, headers=headers, params=params)
+        if resp is None or resp.status_code != 200:
+            logger.error(f"Failed to get latest price for {symbol}")
+            return None
+
         try:
-            resp = self.session.get(url, headers=headers, params=params)
-            resp.raise_for_status()
             data = resp.json()
             quotes = data.get("d", {})
 
@@ -335,9 +611,8 @@ class TradeLockerClient:
                 "ask": float(quotes.get("ap", 0)),
                 "mid": (float(quotes.get("bp", 0)) + float(quotes.get("ap", 0))) / 2,
             }
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get latest price for {symbol}: {e}")
+        except (ValueError, KeyError) as e:
+            logger.error(f"Failed to parse latest price for {symbol}: {e}")
             return None
 
     # ========================================
@@ -431,6 +706,7 @@ class TradeLockerClient:
             "freeMargin": fallback_equity,
             "marginLevel": 0,
             "unrealizedPnL": 0,
+            "_source": "fallback",  # Flag for circuit breaker in main.py
         }
 
     # ========================================
@@ -451,6 +727,14 @@ class TradeLockerClient:
     ) -> Optional[str]:
         """
         Place a trading order.
+
+        NOTE: This method intentionally does NOT retry on failure. Retrying
+        order placement on network errors risks duplicate fills (the original
+        order may have been accepted by the exchange despite the client
+        receiving a timeout/disconnect). Only network-level connection errors
+        are caught; we do NOT retry on 429 to avoid double orders. If the
+        request fails, we log clearly and return None so the caller knows no
+        order was confirmed.
 
         Args:
             symbol: Instrument symbol
@@ -499,6 +783,7 @@ class TradeLockerClient:
             payload["takeProfitType"] = take_profit_type
 
         try:
+            self._throttle()
             resp = self.session.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()

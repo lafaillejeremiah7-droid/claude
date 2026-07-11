@@ -33,13 +33,19 @@ Usage:
     python main.py --status # Show current status + adaptive engine state
 """
 import sys
+import os
 import time
+import json
 import signal
 import logging
 import argparse
 import uuid
 from datetime import datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
+
+import pandas as pd
+import numpy as np
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -53,15 +59,19 @@ from config import (
     TL_SERVER,
     TL_ENVIRONMENT,
     RISK_PERCENT,
+    PAPER_STARTING_EQUITY,
 )
 from modules.api_client import TradeLockerClient
 from modules.indicators import add_all_indicators
 from modules.trend_analysis import get_trend_state, TrendDirection
 from modules.entry_signals import scan_for_entry
-from modules.risk_management import RiskManager
+from modules.risk_management import RiskManager, confidence_to_risk_pct
 from modules.session_filter import can_trade_now, check_session_status
 from modules.trade_manager import TradeManager
+from modules.paper_trading import PaperTradeManager
 from modules.adaptive_engine import AdaptiveEngine, TradeFeatures
+from modules.reporting import PerformanceReporter
+from config import REPORTS_DIR, REPORT_MIN_SAMPLE, REPORT_WEAK_WIN_RATE
 
 # ========================================
 # LOGGING SETUP
@@ -87,7 +97,12 @@ logger = logging.getLogger("BOT")
 # ========================================
 # CONSTANTS
 # ========================================
-AVOID_HOURS = [15, 16, 17]  # UTC hours with high loss rate (London close)
+# NOTE: AVOID_HOURS is NOT used directly. The actual avoid_hours list comes from
+# the adaptive engine's params (adaptive_config.json) and can be overridden via
+# the AVOID_HOURS env var. This constant is kept only as documentation of the
+# original London-close avoidance rationale.
+# AVOID_HOURS = [15, 16, 17]  # UTC hours with high loss rate (London close)
+
 MAX_ATR_PERCENTILE = 0.80   # Skip when volatility is extreme
 
 
@@ -109,14 +124,74 @@ class TradingBot:
         self.risk_manager = RiskManager()
         self.trade_manager = None  # Initialized after client setup
 
+        # Paper-trading engine (only used in --dry mode). It simulates the full
+        # trade lifecycle against REAL live prices and writes to parallel paper
+        # files, leaving all live files/state completely untouched.
+        self.paper_manager = None
+        if self.dry_run:
+            self.paper_manager = PaperTradeManager(
+                client=self.client,
+                starting_equity=PAPER_STARTING_EQUITY,
+            )
+
         # ADAPTIVE ENGINE - the self-learning brain
         self.adaptive = AdaptiveEngine(
             optimize_every_n=20,       # Re-optimize after every 20 trades
             min_trades_to_learn=30,    # Need 30 trades before first adaptation
         )
 
+        # Override adaptive engine's avoid_hours if AVOID_HOURS env var is
+        # explicitly set (including to empty string = trade all hours).
+        if "AVOID_HOURS" in os.environ:
+            from config import AVOID_HOURS_STR
+            if AVOID_HOURS_STR.strip() == "":
+                self.adaptive.params.avoid_hours = []
+            else:
+                self.adaptive.params.avoid_hours = [
+                    int(h.strip()) for h in AVOID_HOURS_STR.split(",") if h.strip()
+                ]
+            logger.info(f"Avoid hours overridden from .env: {self.adaptive.params.avoid_hours}")
+
         # Track pending trades (for feature recording on close)
         self.pending_features: dict = {}  # position_id -> TradeFeatures
+
+        # Circuit breaker: consecutive fallback-equity cycles counter.
+        # If the API fails to return real equity for 3+ cycles, pause trading.
+        self._consecutive_fallback_equity: int = 0
+        self._FALLBACK_EQUITY_MAX_CYCLES: int = 3
+
+        # PERFORMANCE REPORTER - emits daily/weekly/monthly reports on rollover.
+        # READ-mostly of the bot's stats; only writes to logs/reports/.
+        # Mode-aware: in --dry mode the paper engine writes parallel paper files
+        # (logs/paper_daily_stats.json + journal/paper_journal_<date>.jsonl), so
+        # the reporter runs in "paper" mode and reads THOSE files. In live mode
+        # it reads the live daily_stats.json + journal_<date>.jsonl. Missing
+        # files never hard-fail (graceful degrade).
+        bot_root = Path(__file__).parent
+        if self.dry_run:
+            self.reporter = PerformanceReporter(
+                base_dir=bot_root,
+                reports_dir=bot_root / REPORTS_DIR,
+                stats_file=bot_root / "logs" / "paper_daily_stats.json",
+                journal_dir=bot_root / "journal",
+                journal_prefix="paper_journal",
+                mode="paper",
+                min_sample=REPORT_MIN_SAMPLE,
+                weak_win_rate=REPORT_WEAK_WIN_RATE,
+                log=logger,
+            )
+            # Give the paper engine the reporter hook it references on close.
+            if self.paper_manager is not None:
+                setattr(self.paper_manager, "reporter", self.reporter)
+        else:
+            self.reporter = PerformanceReporter(
+                base_dir=bot_root,
+                reports_dir=bot_root / REPORTS_DIR,
+                mode="live",
+                min_sample=REPORT_MIN_SAMPLE,
+                weak_win_rate=REPORT_WEAK_WIN_RATE,
+                log=logger,
+            )
 
         # Signal handling for graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -140,6 +215,10 @@ class TradingBot:
         logger.info(f"Server: {TL_SERVER}")
         logger.info(f"Instruments: {INSTRUMENTS}")
         logger.info(f"Dry Run: {self.dry_run}")
+        if self.dry_run and self.paper_manager:
+            logger.info(
+                f"Paper Mode: ENABLED | Starting Equity: ${self.paper_manager.starting_equity:.2f}"
+            )
         logger.info(f"Scan Interval: {SCAN_INTERVAL_SECONDS}s")
         logger.info(f"Risk Per Trade: {RISK_PERCENT}%")
         logger.info(f"Confidence Threshold: {self.adaptive.params.min_confidence}/10")
@@ -214,6 +293,15 @@ class TradingBot:
         self.scan_count += 1
         self.last_scan_time = datetime.now(timezone.utc)
 
+        # Performance reporting: emit daily/weekly/monthly reports on UTC
+        # rollover. Runs BEFORE can_trade() so the reporter still sees the
+        # just-ended day's stats before they are reset. Must never throw into
+        # the trading loop.
+        try:
+            self.reporter.maybe_emit(self.last_scan_time)
+        except Exception as e:
+            logger.warning(f"Performance reporter error (non-fatal): {e}")
+
         # Ensure authenticated
         if not self.client.ensure_authenticated():
             logger.warning("Authentication expired, re-authenticating...")
@@ -229,8 +317,30 @@ class TradingBot:
 
         equity = balance["equity"]
 
-        # Check if we can trade (risk limits)
-        can_trade, trade_reason = self.risk_manager.can_trade(equity)
+        # Circuit breaker: if equity source is "fallback" for too many
+        # consecutive cycles, PAUSE trading to avoid trading on stale/wrong equity.
+        if balance.get("_source") == "fallback":
+            self._consecutive_fallback_equity += 1
+            if self._consecutive_fallback_equity >= self._FALLBACK_EQUITY_MAX_CYCLES:
+                logger.critical(
+                    f"CIRCUIT BREAKER: Account balance API failed for "
+                    f"{self._consecutive_fallback_equity} consecutive cycles. "
+                    f"Trading PAUSED to avoid operating on stale/fictional equity "
+                    f"(${equity:.2f} from env fallback). Resolve API connectivity."
+                )
+                return
+        else:
+            self._consecutive_fallback_equity = 0
+
+        # Check if we can trade (risk limits).
+        # In dry mode we gate on PAPER stats/equity so the paper run mirrors the
+        # real constraints without ever reading or writing the live stats file.
+        if self.dry_run and self.paper_manager:
+            can_trade, trade_reason = self.paper_manager.risk_manager.can_trade(
+                self.paper_manager.current_equity
+            )
+        else:
+            can_trade, trade_reason = self.risk_manager.can_trade(equity)
 
         # Manage existing positions + check for closed trades
         self._manage_positions_and_learn()
@@ -253,6 +363,33 @@ class TradingBot:
         Manage open positions AND detect closed trades for adaptive learning.
         When a trade closes, record its features + outcome in the adaptive engine.
         """
+        # DRY MODE: manage paper positions against REAL live prices and feed
+        # closed paper trades to adaptive learning (+ PerformanceReporter if any).
+        if self.dry_run:
+            if not self.paper_manager:
+                return
+            closed_trades = self.paper_manager.manage_open_positions()
+            for trade in closed_trades:
+                pos_id = trade["position_id"]
+                features = self.pending_features.pop(pos_id, None)
+                if features is not None:
+                    features.result = "win" if trade["is_win"] else "loss"
+                    features.pnl_r = trade["r_multiple"]
+                    self.adaptive.record_trade(features)
+                    logger.info(
+                        f"[PAPER] ADAPTIVE LEARNING: Recorded closed paper trade {pos_id} | "
+                        f"{features.symbol} {features.direction} | "
+                        f"Result: {features.result} ({features.pnl_r:+.2f}R)"
+                    )
+                # Feed the performance reporter if one is wired up (optional).
+                reporter = getattr(self, "reporter", None)
+                if reporter is not None:
+                    try:
+                        reporter.record_paper_trade(trade)
+                    except Exception as e:
+                        logger.debug(f"[PAPER] Reporter record failed: {e}")
+            return
+
         if not self.trade_manager:
             return
 
@@ -271,11 +408,42 @@ class TradingBot:
             if pos_id in self.pending_features:
                 features = self.pending_features.pop(pos_id)
 
-                # Get the trade result from the trade manager's journal
-                # Estimate based on last known data
-                # The trade_manager already logged the PnL - we need to update features
-                # For now, use risk manager's last recorded trade
-                # In production, we'd query the API for exact fill prices
+                # Determine trade outcome from risk manager's journal/last close.
+                # The trade_manager already computed pnl in _handle_position_closed
+                # and journaled it. Read the latest CLOSE entry from journal to
+                # extract the actual result and R multiple.
+                try:
+                    from pathlib import Path as _Path
+                    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    journal_file = _Path(__file__).parent / "journal" / f"journal_{today}.jsonl"
+                    if journal_file.exists():
+                        # Read the last CLOSE entry matching this position_id
+                        with open(journal_file, "r") as jf:
+                            for line in reversed(jf.readlines()):
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                entry = json.loads(line)
+                                if (entry.get("action") == "CLOSE" and
+                                        entry.get("position_id") == pos_id):
+                                    pnl = float(entry.get("pnl", 0))
+                                    r_multiple = float(entry.get("r_multiple", 0))
+                                    is_win = entry.get("is_win", False)
+                                    if pnl > 0 and is_win:
+                                        features.result = "win"
+                                    elif pnl < 0:
+                                        features.result = "loss"
+                                    else:
+                                        features.result = "breakeven"
+                                    features.pnl_r = r_multiple
+                                    break
+                except Exception as e:
+                    logger.debug(f"Could not read journal for trade outcome: {e}")
+                    # Fallback: if we still don't have a result, estimate from
+                    # risk manager stats (last trade was a win/loss)
+                    if not features.result:
+                        features.result = "loss"  # conservative default
+                        features.pnl_r = 0.0
 
                 # Record in adaptive engine
                 self.adaptive.record_trade(features)
@@ -362,6 +530,9 @@ class TradingBot:
         direction = "bullish" if trend_state.combined == TrendDirection.BULLISH else "bearish"
         dir_arrow = "LONG ^" if direction == "bullish" else "SHORT v"
 
+        # Graduated Conviction: if partial alignment, cap confidence later
+        is_partial_alignment = getattr(trend_state, 'partial_alignment', False)
+
         # 5. Scan for entry signal on 5M (needs 5/6 confirmations - sweep optional)
         entry_signal = scan_for_entry(df_5m, trend_state.combined)
 
@@ -419,6 +590,23 @@ class TradingBot:
         # 7. ADAPTIVE CONFIDENCE GATE (need 8/10+)
         should_trade, confidence, reason = self.adaptive.should_take_trade(features)
 
+        # Graduated Conviction: cap confidence at 8.5 for partial alignment
+        if is_partial_alignment and confidence > 8.5:
+            confidence = 8.5
+            logger.info(
+                f"{symbol}: [PARTIAL ALIGN] Confidence capped at 8.5 "
+                f"(4H={trend_state.direction_4h.value}, 30M={trend_state.direction_30m.value})"
+            )
+
+        # Re-evaluate should_trade with potentially capped confidence
+        min_conf = self.adaptive.params.min_confidence
+        if confidence >= min_conf:
+            should_trade = True
+            reason = "passed"
+        elif is_partial_alignment and confidence >= min_conf:
+            should_trade = True
+            reason = "partial_alignment_passed"
+
         # Calculate estimated SL and TP for display
         from modules.indicators import get_recent_swing_low, get_recent_swing_high
         entry_price = df_5m["close"].iloc[-1] if "close" in df_5m.columns else df_5m["Close"].iloc[-1]
@@ -433,7 +621,15 @@ class TradingBot:
             sl_dist = est_sl - entry_price
             est_tp = entry_price - (sl_dist * 2.0)
 
-        risk_amount = equity * 0.02
+        # Confidence-scaled risk for display (1%-3% between gate and a perfect
+        # score). In dry mode we size off paper equity; otherwise live equity.
+        sizing_equity = (
+            self.paper_manager.current_equity
+            if (self.dry_run and self.paper_manager)
+            else equity
+        )
+        risk_pct = confidence_to_risk_pct(confidence)
+        risk_amount = sizing_equity * (risk_pct / 100.0)
         est_win_prob = confidence * 10  # Approximate: 8/10 confidence ~ 80% prob
 
         if not should_trade:
@@ -441,7 +637,7 @@ class TradingBot:
                 f"\n{'- '*25}\n"
                 f"{symbol}: NEAR-MISS ({dir_arrow}) | Confidence: {confidence:.1f}/10 (need 8.0)\n"
                 f"  Entry: ${entry_price:.2f} | SL: ${est_sl:.2f} | TP: ${est_tp:.2f}\n"
-                f"  Risk: ${risk_amount:.2f} | SL Distance: ${sl_dist:.2f}\n"
+                f"  Risk: ${risk_amount:.2f} ({risk_pct:.1f}%) | SL Distance: ${sl_dist:.2f}\n"
                 f"  Est. Win Probability: {est_win_prob:.0f}%\n"
                 f"  Pattern: {entry_signal.candle_pattern} | RSI: {entry_signal.rsi_value:.1f} | Vol: {entry_signal.volume_ratio:.2f}x\n"
                 f"  Reason rejected: {reason}\n"
@@ -450,20 +646,27 @@ class TradingBot:
             return
 
         # 8. ALL GATES PASSED - Execute!
+        partial_tag = " [PARTIAL ALIGN]" if is_partial_alignment else ""
         logger.info(
             f"\n{'='*50}\n"
-            f"TRADE SIGNAL APPROVED (Adaptive)\n"
+            f"TRADE SIGNAL APPROVED{partial_tag} (Adaptive)\n"
             f"{'='*50}\n"
             f"Symbol: {symbol}\n"
             f"Direction: {direction.upper()}\n"
             f"Confidence: {confidence:.1f}/10 | Est. Win Prob: {est_win_prob:.0f}%\n"
             f"Entry: ${entry_price:.2f} | SL: ${est_sl:.2f} | TP: ${est_tp:.2f}\n"
-            f"Risk: ${risk_amount:.2f} | Potential Reward: ${risk_amount * 2:.2f}\n"
+            f"Risk: ${risk_amount:.2f} ({risk_pct:.1f}%) | Potential Reward: ${risk_amount * 2:.2f}\n"
             f"Pattern: {entry_signal.candle_pattern}\n"
             f"RSI: {entry_signal.rsi_value:.1f} | Volume: {entry_signal.volume_ratio:.2f}x avg\n"
             f"Trend Confidence: {trend_state.confidence:.2f}\n"
             f"{'='*50}"
         )
+
+        if is_partial_alignment:
+            logger.info(
+                f"[PARTIAL ALIGN] Taking setup: 4H={trend_state.direction_4h.value}, "
+                f"30M={trend_state.direction_30m.value}, conf={confidence:.1f}, risk={risk_pct:.1f}%"
+            )
 
         self._execute_trade(
             symbol=symbol,
@@ -589,7 +792,47 @@ class TradingBot:
         # Use adaptive trailing params
         trail_trigger, trail_distance = self.adaptive.get_trailing_params()
 
-        # Create complete trade setup
+        entry_reasons = signal.reasons + [f"Confidence: {confidence_score:.1f}/10"]
+
+        # Dry run mode: open a PAPER position (full simulated lifecycle against
+        # real prices). Sized off paper equity with confidence-scaled risk.
+        if self.dry_run and self.paper_manager:
+            position_id = self.paper_manager.open_from_signal(
+                symbol=symbol,
+                direction=signal.direction,
+                entry_price=signal.entry_price,
+                df_5m=df_5m,
+                trend_confidence=trend_confidence,
+                confidence=confidence_score,
+                pip_size=pip_size,
+                lot_size=lot_size,
+                min_lot=min_lot,
+                lot_step=lot_step,
+                entry_reasons=entry_reasons,
+            )
+
+            if position_id:
+                # Track features so the outcome can be fed to adaptive learning
+                # when the paper position closes.
+                self.pending_features[position_id] = features
+                paper_pos = self.paper_manager.active_positions.get(position_id)
+                # Keep the existing [DRY RUN] intent line for continuity.
+                logger.info(
+                    f"[DRY RUN] Would execute: {signal.direction.upper()} "
+                    f"{paper_pos.quantity} {symbol} | "
+                    f"Entry={paper_pos.entry_price:.2f} SL={paper_pos.stop_loss:.2f} "
+                    f"TP={paper_pos.take_profit:.2f} | "
+                    f"Risk=${paper_pos.risk_amount:.2f} | "
+                    f"Confidence: {confidence_score:.1f}/10"
+                )
+            else:
+                logger.info(
+                    f"[PAPER] Trade not opened for {symbol} "
+                    f"(paper risk limit or invalid setup)"
+                )
+            return
+
+        # Create complete trade setup (LIVE) with confidence-scaled sizing.
         setup = self.risk_manager.create_trade_setup(
             symbol=symbol,
             direction=signal.direction,
@@ -601,32 +844,17 @@ class TradingBot:
             lot_size=lot_size,
             min_lot=min_lot,
             lot_step=lot_step,
+            confidence=confidence_score,
         )
 
         if not setup.valid:
             logger.warning(f"Trade setup rejected: {setup.rejection_reason}")
             return
 
-        # Dry run mode
-        if self.dry_run:
-            logger.info(
-                f"[DRY RUN] Would execute: {setup.direction.upper()} "
-                f"{setup.position_size} {symbol} | "
-                f"Entry={setup.entry_price:.2f} SL={setup.stop_loss:.2f} "
-                f"TP={setup.take_profit:.2f} | "
-                f"Risk=${setup.risk_amount:.2f} | "
-                f"Confidence: {confidence_score:.1f}/10"
-            )
-            # Still record for learning in dry run
-            features.result = "pending"
-            features.pnl_r = 0.0
-            self.adaptive.record_trade(features)
-            return
-
         # Execute the trade
         position_id = self.trade_manager.open_position(
             setup=setup,
-            entry_reasons=signal.reasons + [f"Confidence: {confidence_score:.1f}/10"],
+            entry_reasons=entry_reasons,
         )
 
         if position_id:
@@ -666,6 +894,14 @@ class TradingBot:
                     f"BE={'Yes' if pos['breakeven'] else 'No'}"
                 )
 
+        # Paper trading status (dry mode only)
+        if self.paper_manager:
+            logger.info(f"\nPaper Trading (--dry):")
+            for key, val in self.paper_manager.get_status().items():
+                if key == "positions":
+                    continue
+                logger.info(f"  {key}: {val}")
+
         # Adaptive engine status
         logger.info(f"\nAdaptive Engine:")
         for key, val in self.adaptive.get_status().items():
@@ -695,10 +931,6 @@ class TradingBot:
 # ========================================
 
 def main():
-    # Need pandas for feature building
-    global pd
-    import pandas as pd
-
     parser = argparse.ArgumentParser(
         description="TradeLocker Self-Adaptive Trading Bot"
     )

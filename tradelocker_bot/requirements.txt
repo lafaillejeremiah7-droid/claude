@@ -4,3 +4,8 @@ numpy>=1.24.0
 python-dotenv>=1.0.0
 schedule>=1.2.0
 ta>=0.10.2
+
+
+# --- Testing (dev only) ---
+pytest>=7.4.0
+hypothesis>=6.0.0
