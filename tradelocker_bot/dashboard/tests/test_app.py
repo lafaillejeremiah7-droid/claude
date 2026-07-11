@@ -62,7 +62,7 @@ def test_root_serves_html(client):
     res = client.get("/")
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/html")
-    assert "TRADELOCKER DASHBOARD" in res.text
+    assert "BTC POLYMARKET TERMINAL" in res.text
     assert "/api/stream" in res.text  # subscribes to SSE
 
 
