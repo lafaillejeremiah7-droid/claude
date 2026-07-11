@@ -97,6 +97,14 @@ class MultiFactorScorer:
         if price < snap.ema_fast < snap.ema_slow and snap.di_minus > snap.di_plus:
             return "SELL"
 
+        # Moderate bullish: price > EMA fast and ADX > 20
+        if price > snap.ema_fast and snap.ema_fast > snap.ema_slow and snap.adx > 20:
+            return "BUY"
+
+        # Moderate bearish: price < EMA fast and ADX > 20
+        if price < snap.ema_fast and snap.ema_fast < snap.ema_slow and snap.adx > 20:
+            return "SELL"
+
         return "NONE"
 
     def _score_ema_alignment(self, snap: IndicatorSnapshot, direction: str) -> float:

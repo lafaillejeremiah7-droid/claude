@@ -48,7 +48,7 @@ class TrendStrategy:
         self.scorer = scorer
         self.risk = risk_manager
         self.cfg = config
-        self._pullback_zone_pct = 0.3  # Within 30% of ATR from EMA = pullback zone
+        self._pullback_zone_pct = 0.6  # Within 60% of ATR from EMA = pullback zone
 
     def evaluate(self, snap: IndicatorSnapshot,
                  dxy_confirms: bool = False,
@@ -120,6 +120,7 @@ class TrendStrategy:
         Determine if price is at a valid entry point:
         - PULLBACK: Price has pulled back to EMA20 zone
         - BREAKOUT: Price has broken session high/low and is retesting
+        - MOMENTUM: Strong ADX + price moving in direction (no pullback needed)
         """
         price = snap.current_price
         pullback_zone = snap.atr * self._pullback_zone_pct
@@ -136,6 +137,10 @@ class TrendStrategy:
                 if retest_distance <= pullback_zone:
                     return "BREAKOUT"
 
+            # Momentum: ADX very strong, price above EMAs, accept market entry
+            if snap.adx > 30 and price > snap.ema_fast > snap.ema_slow:
+                return "MOMENTUM"
+
         elif direction == "SELL":
             # Pullback: price near EMA fast (within pullback zone below it)
             distance_to_ema = snap.ema_fast - price
@@ -147,6 +152,10 @@ class TrendStrategy:
                 retest_distance = session_low - price
                 if retest_distance <= pullback_zone:
                     return "BREAKOUT"
+
+            # Momentum: ADX very strong, price below EMAs, accept market entry
+            if snap.adx > 30 and price < snap.ema_fast < snap.ema_slow:
+                return "MOMENTUM"
 
         return "NONE"
 
