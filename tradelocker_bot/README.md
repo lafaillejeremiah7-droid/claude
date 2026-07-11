@@ -50,6 +50,41 @@ An autonomous Python trading bot for **BTC/USD** and **XAU/USD** that connects t
 - **XAU/USD**: London + New York only (no Asian session)
 - **News Avoidance**: No trades within 30 minutes of high-impact events
 
+### Real Yields Macro Correlation Filter (XAUUSD)
+
+Gold's strongest macro driver is **real interest rates** — the 10-Year
+Treasury Inflation-Protected Security yield (FRED series `DFII10`) —
+historically about **-0.82 correlated** with gold. This is materially
+stronger and more stable than the US Dollar Index (DXY), whose correlation
+with gold has been shown to swing positive for extended stretches and fully
+decouple from gold for a year or more.
+
+`modules/real_yields_filter.py` fetches `DFII10` from FRED's public CSV
+endpoint (no API key required), caches it on disk (daily-resolution data
+doesn't need refreshing more than a few times a day), and computes its recent
+trend:
+
+- **Rising real yields** → bearish bias for gold → opposes XAUUSD **buys**,
+  aligns with XAUUSD **sells**
+- **Falling real yields** → bullish bias for gold → aligns with XAUUSD
+  **buys**, opposes XAUUSD **sells**
+- **Flat** → neutral, no adjustment
+
+The resulting alignment score (-1.0 fully opposed .. +1.0 fully aligned) feeds
+into the adaptive confidence engine as a 9th scoring dimension
+(`real_yield_quality`), applied only to XAUUSD. It **fails open**: if FRED is
+unreachable and no on-disk cache exists yet, the filter returns neutral and
+never blocks trading — it's a confirmation layer on top of the core technical
+strategy, not a hard network dependency.
+
+| Setting | Default | Description |
+|---|---|---|
+| `REAL_YIELDS_ENABLED` | true | Enable/disable the filter |
+| `REAL_YIELDS_CACHE_TTL_SECONDS` | 21600 (6h) | How often to refresh DFII10 from FRED |
+| `REAL_YIELDS_LOOKBACK_DAYS` | 10 | Observations back when measuring trend |
+| `REAL_YIELDS_TREND_THRESHOLD` | 0.05 | Min. change (pp) to call it rising/falling vs flat |
+| `REAL_YIELDS_FULL_SCALE_CHANGE` | 0.30 | Change (pp) at which alignment score saturates at ±1.0 |
+
 ---
 
 ## Project Structure
@@ -71,7 +106,8 @@ tradelocker_bot/
 │   ├── session_filter.py      # Trading session & news filter
 │   ├── trade_manager.py       # Position lifecycle management
 │   ├── paper_trading.py       # Paper-trading engine for --dry mode
-│   └── reporting.py           # Performance reporting engine (daily/weekly/monthly)
+│   ├── reporting.py           # Performance reporting engine (daily/weekly/monthly)
+│   └── real_yields_filter.py  # Real-yields (10Y TIPS) macro correlation filter (XAUUSD)
 ├── dashboard/                 # Read-only live dashboard (FastAPI backend + frontend)
 ├── logs/                      # Daily log files & stats
 │   ├── bot_YYYY-MM-DD.log

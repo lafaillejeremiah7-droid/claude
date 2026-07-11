@@ -155,6 +155,35 @@ SKIP_NEWS_FILTER = os.getenv("SKIP_NEWS_FILTER", "false").lower() in ("true", "1
 # value from adaptive_config.json stands.
 AVOID_HOURS_STR = os.getenv("AVOID_HOURS", "")
 
+# === Real Yields Correlation Filter (XAUUSD) ===
+# Gold's strongest macro driver is real interest rates (10Y TIPS yield, FRED
+# series DFII10) -- historically ~-0.82 correlation with gold, materially
+# stronger and more stable than the US Dollar Index (DXY), which has been
+# shown to swing positive for extended periods and fully decouple from gold
+# for a year or more. This filter fetches DFII10 from FRED's public CSV
+# endpoint (no API key required), computes its recent trend, and uses it as a
+# confirmation/avoidance layer on XAUUSD trades: rising real yields bias
+# against gold longs, falling real yields bias against gold shorts.
+REAL_YIELDS_ENABLED = os.getenv("REAL_YIELDS_ENABLED", "true").lower() in ("true", "1", "yes")
+# How often (seconds) to refresh the DFII10 series from FRED. The underlying
+# data is daily-resolution, so there is no benefit to refreshing more than a
+# few times per day; default is every 6 hours.
+REAL_YIELDS_CACHE_TTL_SECONDS = float(os.getenv("REAL_YIELDS_CACHE_TTL_SECONDS", str(6 * 3600)))
+# Number of trading-day observations to look back when measuring the
+# real-yield trend (rising/falling/flat).
+REAL_YIELDS_LOOKBACK_DAYS = int(os.getenv("REAL_YIELDS_LOOKBACK_DAYS", "10"))
+# Minimum change (percentage points) over the lookback window to classify the
+# trend as rising/falling rather than flat.
+REAL_YIELDS_TREND_THRESHOLD = float(os.getenv("REAL_YIELDS_TREND_THRESHOLD", "0.05"))
+# Change (percentage points) over the lookback window at which the alignment
+# score saturates at +/-1.0.
+REAL_YIELDS_FULL_SCALE_CHANGE = float(os.getenv("REAL_YIELDS_FULL_SCALE_CHANGE", "0.30"))
+# Confidence penalty/bonus (absolute points on the 0-10 confidence scale)
+# applied when the real-yield trend is fully OPPOSED to a XAUUSD trade
+# direction. Scaled by the continuous alignment score, so a mild opposition
+# applies a smaller penalty than a strong one. Symmetric bonus when aligned.
+REAL_YIELDS_MAX_CONFIDENCE_ADJUSTMENT = float(os.getenv("REAL_YIELDS_MAX_CONFIDENCE_ADJUSTMENT", "1.0"))
+
 # === Graduated Conviction ===
 # When True, allows trades when 4H has direction but 30M is neutral (not opposing).
 # Confidence is capped at 8.5 for these trades (smaller position size).

@@ -71,7 +71,16 @@ from modules.trade_manager import TradeManager
 from modules.paper_trading import PaperTradeManager
 from modules.adaptive_engine import AdaptiveEngine, TradeFeatures
 from modules.reporting import PerformanceReporter
+from modules.real_yields_filter import RealYieldsClient
 from config import REPORTS_DIR, REPORT_MIN_SAMPLE, REPORT_WEAK_WIN_RATE
+from config import (
+    REAL_YIELDS_ENABLED,
+    REAL_YIELDS_CACHE_TTL_SECONDS,
+    REAL_YIELDS_LOOKBACK_DAYS,
+    REAL_YIELDS_TREND_THRESHOLD,
+    REAL_YIELDS_FULL_SCALE_CHANGE,
+    REAL_YIELDS_MAX_CONFIDENCE_ADJUSTMENT,
+)
 
 # ========================================
 # LOGGING SETUP
@@ -139,6 +148,17 @@ class TradingBot:
             optimize_every_n=20,       # Re-optimize after every 20 trades
             min_trades_to_learn=30,    # Need 30 trades before first adaptation
         )
+
+        # REAL YIELDS FILTER - gold's strongest macro correlation (~-0.82 vs
+        # DFII10, materially stronger and more stable than DXY). Applies to
+        # XAUUSD only. Fails open (neutral bias) if FRED is unreachable and
+        # no cache exists, so it never blocks trading on a network hiccup.
+        self.real_yields = RealYieldsClient(
+            cache_ttl_seconds=REAL_YIELDS_CACHE_TTL_SECONDS,
+            lookback_days=REAL_YIELDS_LOOKBACK_DAYS,
+            threshold=REAL_YIELDS_TREND_THRESHOLD,
+            full_scale_change=REAL_YIELDS_FULL_SCALE_CHANGE,
+        ) if REAL_YIELDS_ENABLED else None
 
         # Override adaptive engine's avoid_hours if AVOID_HOURS env var is
         # explicitly set (including to empty string = trade all hours).
@@ -632,6 +652,13 @@ class TradingBot:
         risk_amount = sizing_equity * (risk_pct / 100.0)
         est_win_prob = confidence * 10  # Approximate: 8/10 confidence ~ 80% prob
 
+        real_yield_line = ""
+        if features.real_yield_trend:
+            real_yield_line = (
+                f"  Real Yields (10Y TIPS): {features.real_yield_trend} | "
+                f"Alignment: {features.real_yield_alignment_score:+.2f}\n"
+            )
+
         if not should_trade:
             logger.info(
                 f"\n{'- '*25}\n"
@@ -640,6 +667,7 @@ class TradingBot:
                 f"  Risk: ${risk_amount:.2f} ({risk_pct:.1f}%) | SL Distance: ${sl_dist:.2f}\n"
                 f"  Est. Win Probability: {est_win_prob:.0f}%\n"
                 f"  Pattern: {entry_signal.candle_pattern} | RSI: {entry_signal.rsi_value:.1f} | Vol: {entry_signal.volume_ratio:.2f}x\n"
+                f"{real_yield_line}"
                 f"  Reason rejected: {reason}\n"
                 f"{'- '*25}"
             )
@@ -659,6 +687,7 @@ class TradingBot:
             f"Pattern: {entry_signal.candle_pattern}\n"
             f"RSI: {entry_signal.rsi_value:.1f} | Volume: {entry_signal.volume_ratio:.2f}x avg\n"
             f"Trend Confidence: {trend_state.confidence:.2f}\n"
+            f"{real_yield_line}"
             f"{'='*50}"
         )
 
@@ -691,6 +720,18 @@ class TradingBot:
         """
         now = datetime.now(timezone.utc)
         entry_price = df_5m["close"].iloc[-1] if "close" in df_5m.columns else df_5m["Close"].iloc[-1]
+
+        # Real yields (10Y TIPS) macro correlation -- gold-specific. Fails
+        # open to (0.0, "") for non-gold symbols or if the filter is disabled
+        # / has no data available yet.
+        real_yield_alignment = 0.0
+        real_yield_trend_dir = ""
+        if self.real_yields is not None and "XAU" in symbol.upper():
+            try:
+                _label, real_yield_alignment, ry_meta = self.real_yields.get_bias(direction)
+                real_yield_trend_dir = ry_meta.get("trend_direction", "")
+            except Exception as e:
+                logger.debug(f"REAL_YIELDS: get_bias failed (non-fatal): {e}")
 
         # ATR percentile
         atr_pctile = 0.5
@@ -772,6 +813,8 @@ class TradingBot:
             candle_body_ratio=body_ratio,
             had_liquidity_sweep=entry_signal.liquidity_sweep_detected,
             trend_alignment_score=trend_state.confidence,
+            real_yield_alignment_score=real_yield_alignment,
+            real_yield_trend=real_yield_trend_dir,
         )
 
     # ========================================

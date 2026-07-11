@@ -77,6 +77,13 @@ class TradeFeatures:
     trend_alignment_score: float = 0.0  # 0-1 how well all TFs agree
     momentum_score: float = 0.0  # Future use: composite momentum measure
 
+    # Real-yields (10Y TIPS / DFII10) macro correlation. Real yields are
+    # gold's strongest macro driver (~-0.82 historical correlation), stronger
+    # and more stable than DXY. -1.0 = fully opposed to this trade's
+    # direction, 0.0 = neutral/flat/not-gold, +1.0 = fully aligned.
+    real_yield_alignment_score: float = 0.0
+    real_yield_trend: str = ""  # 'rising' | 'falling' | 'flat' | ''
+
 
 # ============================================================
 # ADAPTIVE PARAMETERS - What the engine can tune
@@ -130,6 +137,11 @@ class AdaptiveParams:
         'rsi_zone_quality': 1.0,
         'session_quality': 1.0,
         'pattern_quality': 1.0,
+        # Real-yields (10Y TIPS) macro correlation -- gold's strongest macro
+        # driver. Weighted lower than the core technical dimensions since it
+        # is a slower-moving daily-resolution confirmation layer, not a
+        # primary signal.
+        'real_yield_quality': 0.5,
     })
     
     # Meta
@@ -307,7 +319,13 @@ class AdaptiveEngine:
         pattern = features.candle_pattern
         pattern_weight = self.params.pattern_weights.get(pattern, 0.5)
         scores['pattern_quality'] = min(10.0, pattern_weight * 10.0)
-        
+
+        # 9. Real Yields (10Y TIPS) Macro Correlation (0-10)
+        # score_alignment ranges -1.0 (fully opposed) .. +1.0 (fully aligned);
+        # 0.0 (neutral/flat/no-data) maps to a neutral 5.0.
+        ry_score = features.real_yield_alignment_score
+        scores['real_yield_quality'] = max(0.0, min(10.0, 5.0 + ry_score * 5.0))
+
         # WEIGHTED COMPOSITE SCORE
         total_weight = sum(weights.values())
         if total_weight <= 0:
@@ -594,6 +612,8 @@ class AdaptiveEngine:
                 values.append(t.hour_utc)
             elif feature_name == 'pattern_quality':
                 values.append(self.params.pattern_weights.get(t.candle_pattern, 0.5))
+            elif feature_name == 'real_yield_quality':
+                values.append(t.real_yield_alignment_score)
         return values
     
     def _score_params_on_trades(self, params: AdaptiveParams, trades: List[TradeFeatures]) -> float:
