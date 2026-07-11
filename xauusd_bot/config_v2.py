@@ -138,3 +138,115 @@ COOLDOWN_V2 = {
     "max_trades_per_session": 2,    # Max 2 per session
     "max_trades_per_day": 3,        # Max 3 per day (quality > quantity)
 }
+
+# ============================================================
+# V3 ADAPTIVE SYSTEMS CONFIGURATION
+# ============================================================
+
+# System 1: Adaptive R:R Based on Market Condition
+ADAPTIVE_RR = {
+    "rr_good": 1.35,               # Good condition target R:R
+    "rr_okay": 1.0,                # Standard 1:1
+    "rr_choppy": 0.75,             # Choppy = quick TP
+    "good_condition_threshold": 0.7,  # Score above = GOOD
+    "choppy_condition_threshold": 0.35,  # Score below = CHOPPY
+}
+
+# System 2: Adaptive Position Size (Kelly Criterion Lite)
+ADAPTIVE_SIZE = {
+    "base_risk_pct": 0.02,         # Base 2% risk
+    "max_risk_pct": 0.03,          # Max 3% on hot streak
+    "min_risk_pct": 0.01,          # Min 1% on cold streak
+    "streak_scale_up": 0.005,      # Scale up per win streak trade
+    "streak_scale_down": 0.005,    # Scale down per loss streak trade
+}
+
+# System 3: Tight SL Reality (Partial Losses)
+TIGHT_SL = {
+    "tight_sl_factor": 0.6,        # Real SL is tighter than max
+    "partial_loss_min": 0.3,       # Min loss factor (best case)
+    "partial_loss_max": 0.7,       # Max loss factor (worst case)
+}
+
+# System 4: Early Exit Based on Probability
+EARLY_EXIT = {
+    "adx_breakout_threshold": 22,  # ADX above = range breaking (lowered)
+    "momentum_shift_threshold": 0.5,
+    "min_profit_for_early_exit": 0.25,  # Must be 0.25R+ profit to exit early
+    "max_loss_for_early_cut": 0.4,     # Cut at 0.4R loss if conditions bad
+}
+
+# System 5: Sentiment Scanner
+SENTIMENT = {
+    "mode": "backtest",            # "backtest" or "live"
+    "signal_decay_minutes": 45,    # How long signals last
+    "danger_decay_minutes": 60,    # How long danger signals last
+    "bullish_threshold": 0.5,      # Net score above = bullish (raised to reduce noise)
+    "bearish_threshold": -0.5,     # Net score below = bearish
+    "danger_threshold": 0.75,      # Danger score above = avoid (raised)
+}
+
+# System 6: Influencer Flow (uses same scanner, tracked separately)
+INFLUENCER_FLOW = {
+    "min_signals_for_confidence": 3,
+    "flow_weight": 0.15,           # Weight in final decision
+}
+
+# V3 Risk Management (overrides V2 where specified)
+RISK_V3 = {
+    "risk_per_trade": 0.02,        # Base (adaptive engine adjusts)
+    "max_daily_loss": 0.05,        # 5% daily max
+    "max_daily_trades": 6,         # 6 trades/day (optimal from backtest)
+    "max_concurrent": 1,           # One trade at a time
+    "max_spread_pips": 25,         # Don't trade if spread too wide
+    "trailing_stop": False,
+    "move_to_breakeven": False,
+    "partial_close": False,
+}
+
+# V3 Session Windows (NY session added)
+SESSIONS_V3 = {
+    "asian": {
+        "start": "00:00", "end": "07:00",
+        "active": True,
+        "note": "Best ranging conditions for gold",
+    },
+    "london_early": {
+        "start": "07:00", "end": "09:00",
+        "active": False,
+        "note": "Range break zone, avoid",
+    },
+    "london_mid": {
+        "start": "09:00", "end": "12:00",
+        "active": True,
+        "note": "New ranges form after London breakout",
+    },
+    "overlap": {
+        "start": "12:00", "end": "14:00",
+        "active": True,
+        "note": "Only if still ranging",
+    },
+    "ny_session": {
+        "start": "14:00", "end": "18:00",
+        "active": True,
+        "note": "NY session added - good reversals after initial move",
+    },
+    "ny_late": {
+        "start": "18:00", "end": "21:00",
+        "active": False,
+        "note": "Low quality late NY",
+    },
+    "dead_zone": {
+        "start": "21:00", "end": "00:00",
+        "active": False,
+        "note": "No liquidity",
+    },
+}
+
+# V3 Cooldown (optimized from backtest results)
+COOLDOWN_V3 = {
+    "after_loss_minutes": 30,       # 30 min after loss (was 60)
+    "after_win_minutes": 10,        # 10 min after win (was 30)
+    "max_trades_per_session": 3,    # Max 3 per session
+    "max_trades_per_day": 6,        # Max 6 per day (optimal)
+}
