@@ -545,6 +545,31 @@ async def startup():
     feed.start_websocket()  # TradingView real-time price in background thread
     asyncio.create_task(price_loop())
     asyncio.create_task(yield_loop())
+    asyncio.create_task(market_status_loop())
+
+async def market_status_loop():
+    """Send Telegram when XAUUSD market opens/closes."""
+    was_open = None
+    while True:
+        now = datetime.now(timezone.utc)
+        weekday = now.weekday()  # 0=Mon ... 6=Sun
+        hour = now.hour
+        # XAUUSD: open Sunday 22:00 UTC → Friday 21:00 UTC
+        if weekday == 4 and hour >= 21:
+            is_open = False
+        elif weekday == 5:
+            is_open = False
+        elif weekday == 6 and hour < 22:
+            is_open = False
+        else:
+            is_open = True
+        if was_open is not None and is_open != was_open:
+            if is_open:
+                await send_telegram("Yo XAUUSD market just opened. Bot is scanning. Signals coming when conditions align.")
+            else:
+                await send_telegram("Yo XAUUSD market just closed. No signals until Sunday 10pm UTC.")
+        was_open = is_open
+        await asyncio.sleep(60)
 
 async def price_loop():
     while True:
