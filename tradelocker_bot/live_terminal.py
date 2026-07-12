@@ -1,14 +1,16 @@
 """
-Standalone live XAUUSD terminal server.
+Standalone live XAUUSD terminal server + signal delivery via Telegram.
 
 Pulls real-time gold price (no broker needed), computes indicators, runs the
-ASWP engine, and serves the signal terminal dashboard with live data.
+ASWP engine, serves the signal terminal dashboard with live data, and sends
+Telegram signals when EV >= threshold.
 
 Run:
     cd tradelocker_bot
     python3 live_terminal.py
 
-Then open: http://localhost:8080/terminal
+Then open: http://localhost:8080
+Signals auto-sent to Telegram when they fire.
 """
 import asyncio
 import json
@@ -22,6 +24,26 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 import uvicorn
+
+# ---------------------------------------------------------------------------
+# Telegram delivery
+# ---------------------------------------------------------------------------
+
+TELEGRAM_BOT_TOKEN = "8926622863:AAF0QHHYAyEVQZiYV35b5vyeKxDC_ouMnmQ"
+TELEGRAM_CHAT_ID = "7040023207"
+TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+async def send_telegram(text: str):
+    """Send a message to the trader via Telegram."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(TELEGRAM_URL, json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "Monospace",
+            })
+    except Exception as e:
+        print(f"Telegram send error: {e}")
 
 # ---------------------------------------------------------------------------
 # Live price feed (Yahoo Finance real-time quote — no API key, no broker)
@@ -166,13 +188,197 @@ class DashboardState:
         self.daily_pnl = 0.0
         self.max_dd = 0.0
         self.peak = 5000.0
+        self.active_signal = None
+        self.last_signal_time = 0
+        self._today = None
+        # Signal cooldown: minimum seconds between signals
+        self.SIGNAL_COOLDOWN = 300  # 5 minutes between signals minimum
+        self.MAX_SIGNALS_DAY = 2
+        self.MIN_EV = 0.9
+
+    async def check_and_signal(self):
+        """Run the full entry logic and send Telegram if a signal fires."""
+        f = self.feed
+        now = datetime.now(timezone.utc)
+
+        # Daily reset
+        if self._today != now.date():
+            self._today = now.date()
+            self.signals_today = 0
+            self.daily_pnl = 0.0
+
+        # Guards
+        if self.signals_today >= self.MAX_SIGNALS_DAY:
+            return
+        if time.time() - self.last_signal_time < self.SIGNAL_COOLDOWN:
+            return
+        if now.hour in (21, 22):  # thin liquidity
+            return
+        if now.weekday() == 4 and now.hour >= 19:  # friday evening
+            return
+
+        bars_5m = f.bars_5m
+        bars_1h = f.bars_1h
+        if len(bars_5m) < 30 or len(bars_1h) < 50:
+            return
+
+        closes_5m = [b[4] for b in bars_5m]
+        closes_1h = [b[4] for b in bars_1h]
+        atr_val = compute_atr(bars_5m)
+        if atr_val <= 0:
+            return
+
+        # 1H trend gate
+        e20_1h = compute_ema(closes_1h, 20)
+        e50_1h = compute_ema(closes_1h, 50)
+        if e20_1h[-1] > e50_1h[-1]:
+            direction = "buy"
+        elif e20_1h[-1] < e50_1h[-1]:
+            direction = "sell"
+        else:
+            return
+
+        # 15m pullback zone
+        bars_15m = f.bars_15m
+        if not bars_15m:
+            return
+        closes_15m = [b[4] for b in bars_15m]
+        e20_15m = compute_ema(closes_15m, 20)
+        atr_15m = compute_atr(bars_15m)
+        if atr_15m <= 0:
+            return
+        dist_15m = abs(closes_15m[-1] - e20_15m[-1]) / atr_15m
+        if dist_15m > 0.5:
+            return
+
+        # 5m confirmation trigger
+        e20_5m = compute_ema(closes_5m, 20)
+        rsi_val = compute_rsi(closes_5m)
+        if len(bars_5m) < 2:
+            return
+        prev = bars_5m[-2]
+        prev_o, prev_h, prev_l, prev_c = prev[1], prev[2], prev[3], prev[4]
+        pe = e20_5m[-2] if len(e20_5m) >= 2 else e20_5m[-1]
+
+        if direction == "buy":
+            trigger = prev_l <= pe * 1.002 and prev_c > prev_o and rsi_val < 65
+        else:
+            trigger = prev_h >= pe * 0.998 and prev_c < prev_o and rsi_val > 35
+        if not trigger:
+            return
+
+        self.scanned += 1
+
+        # Real yield alignment
+        align = 0.0
+        if abs(f.yield_change) > 0.05:
+            mag = min(1.0, abs(f.yield_change) / 0.30)
+            gold_sign = 1.0 if f.yield_change < 0 else -1.0
+            dir_sign = 1.0 if direction == "buy" else -1.0
+            align = gold_sign * dir_sign * mag
+
+        # EV calculation (ASWP simplified for live — uses pre-trained stats)
+        # Base probabilities from 4.5yr validation: P(TP1)~54%, P(TP2)~50%, P(TP3)~44%
+        # Adjusted by alignment and trend strength
+        trend_boost = 0.05 if abs(e20_1h[-1] - e50_1h[-1]) / atr_val > 2 else 0
+        align_boost = align * 0.08
+        p_tp1 = min(0.85, max(0.35, 0.54 + trend_boost + align_boost))
+        p_tp2 = p_tp1 * 0.92
+        p_tp3 = p_tp1 * 0.81
+
+        # Multi-TP runner-weighted EV
+        ev = 0.10 * 1.0 * p_tp1 + 0.20 * 2.0 * p_tp2 + 0.70 * 3.0 * p_tp3 - (1 - p_tp1) * 1.0
+
+        if ev < self.MIN_EV:
+            return
+
+        self.ev_passed += 1
+
+        # SIGNAL FIRES — compute levels
+        entry = f.price
+        sl_mult = 1.0
+        spread = 0.30
+        sl_dist = sl_mult * atr_val + spread / 2
+
+        # Position sizing: capped at 0.12 lots, risk bounded
+        contract = 100.0
+        leverage = 10.0
+        loss_per_lot = contract * sl_dist
+        max_loss = 250.0 * 0.45  # 45% of daily limit
+        lots = min(0.12, max_loss / loss_per_lot)
+        lots = max(0.01, round(int(lots * 100) / 100, 2))  # round to 0.01 step
+
+        # Margin check
+        margin = lots * contract * entry / leverage
+        if margin > self.equity * 0.95:
+            lots = max(0.01, round(int((self.equity * 0.95 * leverage / (contract * entry)) * 100) / 100, 2))
+
+        risk_dollars = lots * loss_per_lot
+        base_move = sl_mult * atr_val
+
+        if direction == "buy":
+            sl = round(entry - sl_dist, 2)
+            tp1 = round(entry + 1.0 * base_move + spread, 2)
+            tp2 = round(entry + 2.0 * base_move + spread, 2)
+            tp_final = round(entry + 3.0 * base_move + spread, 2)
+        else:
+            sl = round(entry + sl_dist, 2)
+            tp1 = round(entry - 1.0 * base_move - spread, 2)
+            tp2 = round(entry - 2.0 * base_move - spread, 2)
+            tp_final = round(entry - 3.0 * base_move - spread, 2)
+
+        full_win = lots * contract * (0.10 * 1.0 * base_move + 0.20 * 2.0 * base_move + 0.70 * 3.0 * base_move)
+
+        # Build signal
+        self.active_signal = {
+            "direction": direction,
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp_final": tp_final,
+            "lot_size": lots,
+            "risk_dollars": round(risk_dollars, 2),
+            "probability": round(p_tp1, 2),
+            "expected_value_r": round(ev, 2),
+            "full_win": round(full_win, 2),
+            "atr": round(atr_val, 2),
+        }
+
+        self.signals_today += 1
+        self.total_signals += 1
+        self.last_signal_time = time.time()
+
+        # Add to feed
+        ts_str = now.strftime("%H:%M")
+        self.signal_feed.append({
+            "time": ts_str,
+            "type": "signal",
+            "label": direction.upper(),
+            "text": f"${entry:.2f} | EV:{ev:.2f}R | {lots} lots"
+        })
+
+        # SEND TELEGRAM
+        arrow = "BUY" if direction == "buy" else "SELL"
+        msg = (
+            f"XAUUSD {arrow}  |  {lots} lots\n"
+            f"Entry: {entry:.2f}\n"
+            f"SL: {sl:.2f}  (risk -${risk_dollars:.2f})\n"
+            f"TP1: {tp1:.2f}  (close 10%, SL->BE)\n"
+            f"TP2: {tp2:.2f}  (close 20%, SL->TP1)\n"
+            f"Final: {tp_final:.2f}  (ride 70%)\n"
+            f"Probability: {p_tp1:.2f}  |  EV: +{ev:.2f}R\n"
+            f"Est. full win: +${full_win:.2f}"
+        )
+        await send_telegram(msg)
+        print(f"[{ts_str}] SIGNAL SENT: {arrow} @ {entry:.2f}")
+
 
     def compute_snapshot(self) -> dict:
         f = self.feed
         bars_5m = f.bars_5m
         bars_1h = f.bars_1h
 
-        # Indicators on 5m
         closes_5m = [b[4] for b in bars_5m] if bars_5m else []
         closes_1h = [b[4] for b in bars_1h] if bars_1h else []
         atr_val = compute_atr(bars_5m) if len(bars_5m) > 14 else 0
@@ -186,7 +392,7 @@ class DashboardState:
             if e20[-1] > e50[-1]: trend = 1
             elif e20[-1] < e50[-1]: trend = -1
 
-        # Real yield alignment (simplified)
+        # Alignment
         align = 0.0
         if abs(f.yield_change) > 0.05:
             mag = min(1.0, abs(f.yield_change) / 0.30)
@@ -194,37 +400,38 @@ class DashboardState:
             dir_sign = 1.0 if trend >= 0 else -1.0
             align = round(gold_sign * dir_sign * mag, 3)
 
-        # Pipeline stage (how far through the entry logic we are)
-        pipeline = 1  # always scanning
+        # Pipeline stage
+        pipeline = 1
         if trend != 0: pipeline = 2
-        if pipeline >= 2 and len(closes_5m) > 20:
-            # check if in pullback zone (simplified)
-            e20_15 = compute_ema([b[4] for b in f.bars_15m], 20) if f.bars_15m else []
-            if e20_15:
-                dist = abs(closes_5m[-1] - e20_15[-1]) / (atr_val + 0.01)
-                if dist < 0.5: pipeline = 3
-        if pipeline >= 3 and rsi_val < 65 and rsi_val > 35:
-            pipeline = 4  # trigger zone
-        # EV computation (simplified for display)
-        ev = 0.0
-        p_tp1 = 0.5
-        if pipeline >= 4:
-            # rough estimate based on trend + alignment
-            p_tp1 = 0.50 + trend * 0.05 + align * 0.08
-            p_tp2 = p_tp1 * 0.85
-            p_tp3 = p_tp1 * 0.70
-            ev = 0.10*1.0*p_tp1 + 0.20*2.0*p_tp2 + 0.70*3.0*p_tp3 - (1-p_tp1)*1.0
-            if ev >= 0.9: pipeline = 5
+        if pipeline >= 2 and f.bars_15m:
+            closes_15m = [b[4] for b in f.bars_15m]
+            e20_15 = compute_ema(closes_15m, 20)
+            atr_15 = compute_atr(f.bars_15m)
+            if e20_15 and atr_15 > 0:
+                if abs(closes_15m[-1] - e20_15[-1]) / atr_15 < 0.5:
+                    pipeline = 3
+        if pipeline >= 3 and 35 < rsi_val < 65:
+            pipeline = 4
+        if self.active_signal:
+            pipeline = 7
 
-        self.scanned += 1
+        # EV for display
+        ev = 0.0
+        p_tp1 = 0.50
+        if pipeline >= 4 and atr_val > 0:
+            trend_boost = 0.05 if len(closes_1h) >= 50 and abs(compute_ema(closes_1h,20)[-1] - compute_ema(closes_1h,50)[-1]) / atr_val > 2 else 0
+            align_boost = align * 0.08
+            p_tp1 = min(0.85, max(0.35, 0.54 + trend_boost + align_boost))
+            p_tp2 = p_tp1 * 0.92
+            p_tp3 = p_tp1 * 0.81
+            ev = 0.10*1.0*p_tp1 + 0.20*2.0*p_tp2 + 0.70*3.0*p_tp3 - (1-p_tp1)*1.0
+            if ev >= self.MIN_EV: pipeline = max(pipeline, 5)
 
         # Session guards
         now = datetime.now(timezone.utc)
-        hour = now.hour
-        weekday = now.weekday()
-        news_clear = True  # would need a calendar feed for real
-        weekend_clear = not (weekday == 4 and hour >= 19)
-        hours_active = hour not in (21, 22)
+        news_clear = True
+        weekend_clear = not (now.weekday() == 4 and now.hour >= 19)
+        hours_active = now.hour not in (21, 22)
 
         return {
             "mode": "paper",
@@ -236,10 +443,10 @@ class DashboardState:
             "yield_change": round(f.yield_change, 4),
             "yield_alignment": align,
             "p_tp1": round(p_tp1, 2),
-            "p_tp2": round(p_tp1 * 0.85, 2),
-            "p_tp3": round(p_tp1 * 0.70, 2),
+            "p_tp2": round(p_tp1 * 0.92, 2) if pipeline >= 4 else 0,
+            "p_tp3": round(p_tp1 * 0.81, 2) if pipeline >= 4 else 0,
             "current_ev": round(ev, 3),
-            "memory_size": 2500,  # pre-trained memory
+            "memory_size": 2500,
             "pipeline_stage": pipeline,
             "daily_pnl": self.daily_pnl,
             "max_dd": self.max_dd,
@@ -258,7 +465,7 @@ class DashboardState:
                 "weekend_clear": weekend_clear,
                 "hours_active": hours_active,
             },
-            "active_signal": None,
+            "active_signal": self.active_signal,
             "feed": self.signal_feed[-20:],
         }
 
@@ -282,7 +489,8 @@ async def startup():
 async def price_loop():
     while True:
         await feed.fetch_price()
-        await asyncio.sleep(30)  # refresh every 30s
+        await state.check_and_signal()
+        await asyncio.sleep(30)  # scan every 30s
 
 async def yield_loop():
     while True:
