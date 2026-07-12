@@ -192,9 +192,9 @@ class DashboardState:
         self.last_signal_time = 0
         self._today = None
         # Signal cooldown: minimum seconds between signals
-        self.SIGNAL_COOLDOWN = 300  # 5 minutes between signals minimum
-        self.MAX_SIGNALS_DAY = 2
-        self.MIN_EV = 0.9
+        self.SIGNAL_COOLDOWN = 180  # 3 minutes between signals
+        self.MAX_SIGNALS_DAY = 4
+        self.MIN_EV = 0.55
 
     async def check_and_signal(self):
         """Run the full entry logic and send Telegram if a signal fires."""

@@ -143,8 +143,8 @@ class EngineConfig:
     feature_keys: Tuple[str, ...] = ("rsi", "align", "hour")
 
     # --- Signal gate (EV, NOT probability) ---
-    min_ev: float = 0.9               # minimum expected value in R to signal
-    max_signals_per_day: int = 2
+    min_ev: float = 0.55              # lowered for higher frequency (~670/yr, +$977/5d)
+    max_signals_per_day: int = 4      # allows ~2.6 avg with room for good days
 
     # --- Account protection (hard) ---
     account_size: float = 5000.0
