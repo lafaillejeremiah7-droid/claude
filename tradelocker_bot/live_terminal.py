@@ -488,14 +488,23 @@ async def startup():
 
 async def price_loop():
     while True:
-        await feed.fetch_price()
-        await state.check_and_signal()
-        await asyncio.sleep(30)  # scan every 30s
+        try:
+            await asyncio.wait_for(feed.fetch_price(), timeout=15)
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"Price loop: {e}")
+        try:
+            await state.check_and_signal()
+        except Exception as e:
+            print(f"Signal check: {e}")
+        await asyncio.sleep(30)
 
 async def yield_loop():
     while True:
-        await feed.fetch_yields()
-        await asyncio.sleep(3600)  # refresh hourly (daily data)
+        try:
+            await asyncio.wait_for(feed.fetch_yields(), timeout=15)
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"Yield loop: {e}")
+        await asyncio.sleep(3600)
 
 @app.get("/terminal", response_class=HTMLResponse)
 async def terminal():
@@ -520,17 +529,24 @@ async def health():
 async def stream(request: Request):
     async def event_generator():
         last_hash = ""
-        while True:
-            if await request.is_disconnected():
-                break
-            snap = state.compute_snapshot()
-            h = str(hash(json.dumps(snap, default=str)))
-            if h != last_hash:
-                yield f"data: {json.dumps(snap, default=str)}\n\n"
-                last_hash = h
-            else:
-                yield f": heartbeat\n\n"
-            await asyncio.sleep(2)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    snap = state.compute_snapshot()
+                    data = json.dumps(snap, default=str)
+                    h = str(hash(data))
+                    if h != last_hash:
+                        yield f"data: {data}\n\n"
+                        last_hash = h
+                    else:
+                        yield f": heartbeat\n\n"
+                except Exception:
+                    yield f": error\n\n"
+                await asyncio.sleep(2)
+        except asyncio.CancelledError:
+            pass
     from starlette.responses import StreamingResponse
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

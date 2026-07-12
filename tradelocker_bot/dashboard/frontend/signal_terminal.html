@@ -250,13 +250,19 @@ async function loadSnapshot() {
 function connectStream() {
   if (evtSource) evtSource.close();
   evtSource = new EventSource(API_BASE + '/api/stream');
+  let reconnectDelay = 2000;
   evtSource.onmessage = (evt) => {
+    reconnectDelay = 2000; // reset on success
     try {
       const data = JSON.parse(evt.data);
       if (data && data.equity !== undefined) updateDashboard(data);
     } catch(e) {}
   };
-  evtSource.onerror = () => { setTimeout(connectStream, 5000); };
+  evtSource.onerror = () => {
+    evtSource.close();
+    reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+    setTimeout(connectStream, reconnectDelay);
+  };
 }
 
 function updateDashboard(d) {
