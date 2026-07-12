@@ -85,10 +85,31 @@ class LiveFeed:
         self._running = False
 
     def start_websocket(self):
-        """Start TradingView websocket in a background thread."""
+        """Start TradingView websocket + HTTP fallback in background thread."""
         self._running = True
         self._ws_thread = threading.Thread(target=self._ws_loop, daemon=True)
         self._ws_thread.start()
+        # Also start an HTTP price poller as backup (every 10s)
+        self._http_thread = threading.Thread(target=self._http_price_loop, daemon=True)
+        self._http_thread.start()
+
+    def _http_price_loop(self):
+        """Backup: poll Yahoo for live price every 10s if websocket fails."""
+        import requests as _req
+        while self._running:
+            try:
+                # Only fetch if websocket hasn't updated in 20s
+                if time.time() - self.last_update > 20:
+                    r = _req.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d",
+                                 headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                    if r.status_code == 200:
+                        p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
+                        if p and p > 0:
+                            self.price = p
+                            self.last_update = time.time()
+            except:
+                pass
+            time.sleep(10)
 
     def _ws_loop(self):
         """Persistent websocket connection to TradingView for real-time XAUUSD."""
