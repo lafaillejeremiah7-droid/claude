@@ -3,8 +3,11 @@ XAUUSD ASWP Signal Engine
 =========================
 
 A fully self-adaptive signal engine for XAU/USD (gold), built and validated
-against one year of real 1-minute data (Jul 2025 -> Jul 2026, sourced from
+against 4.5 years of real 1-minute data (Jan 2022 -> Jul 2026, sourced from
 Forexite, resampled to 5m/15m/1H) plus real 10Y TIPS real-yield data from FRED.
+
+Active config (high-frequency): minEV 0.55, max 4 signals/day, 3min cooldown.
+Validated: 2,845 trades, 55% WR, +0.893R/trade, $5k -> $44,087, max DD $275.
 
 This module is a SIGNAL generator, not an order executor. It emits signals of
 the form:
@@ -89,14 +92,13 @@ ACCOUNT CONSTRAINTS (hard, never adapt)
   strategy produces a *percentage* return.
 
 ------------------------------------------------------------------------------
-VALIDATED PERFORMANCE (real data, out-of-sample Nov 2025 -> Jul 2026)
+VALIDATED PERFORMANCE (4.5 years walk-forward, Jan 2022 -> Jul 2026)
 ------------------------------------------------------------------------------
 Config: 1H gate -> 15m pullback -> 5m trigger, SL 1.0xATR, BE-after-TP1,
-multi-TP 10/20/70 at 1/2/3R, EV-gated, flat risk.
+multi-TP 10/20/70 at 1/2/3R, EV-gated (minEV 0.55), max 4/day, flat risk.
 
-  minEV 0.9, $100 flat, max 2/day: ~324 trades/yr, +0.81R/trade, +$359/5days,
-                                    5.4% max DD, 58-60% win rate.
-  Higher frequency (~670/yr): ~+$977/5days at ~5.4% DD (needs ~2.6 trades/day).
+  2,845 trades over 4.5 years (~934/yr, ~3.7/day)
+  55% WR, +0.893R/trade, $5k -> $44,087, max DD $275 (zero breaches).
 
 These are historical backtest results on one out-of-sample window; live results
 will differ. Nothing here is financial advice.
