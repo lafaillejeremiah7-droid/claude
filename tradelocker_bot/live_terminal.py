@@ -46,11 +46,25 @@ async def send_telegram(text: str):
         print(f"Telegram send error: {e}")
 
 # ---------------------------------------------------------------------------
-# Live price feed (Yahoo Finance real-time quote — no API key, no broker)
+# Live price feed (TradingView websocket — real-time, no API key, no broker)
 # ---------------------------------------------------------------------------
 
-YAHOO_QUOTE_URL = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+import websocket as ws_lib
+import re as _re
+import random as _random
+import string as _string
+import threading
+
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10"
+
+def _tv_session():
+    return "qs_" + "".join(_random.choices(_string.ascii_lowercase, k=12))
+
+def _tv_header(st):
+    return "~m~" + str(len(st)) + "~m~" + st
+
+def _tv_msg(func, params):
+    return _tv_header(json.dumps({"m": func, "p": params}, separators=(",", ":")))
 
 class LiveFeed:
     def __init__(self):
@@ -58,78 +72,115 @@ class LiveFeed:
         self.high = 0.0
         self.low = 0.0
         self.open = 0.0
-        self.bars_5m = []  # list of (time, o, h, l, c)
+        self.change = 0.0
+        self.bars_5m = []
         self.bars_15m = []
         self.bars_1h = []
         self.yield_value = 0.0
         self.yield_change = 0.0
         self.last_update = 0.0
+        self._ws = None
+        self._ws_thread = None
+        self._running = False
+
+    def start_websocket(self):
+        """Start TradingView websocket in a background thread."""
+        self._running = True
+        self._ws_thread = threading.Thread(target=self._ws_loop, daemon=True)
+        self._ws_thread.start()
+
+    def _ws_loop(self):
+        """Persistent websocket connection to TradingView for real-time XAUUSD."""
+        while self._running:
+            try:
+                session = _tv_session()
+                self._ws = ws_lib.create_connection(
+                    "wss://data.tradingview.com/socket.io/websocket",
+                    headers={"Origin": "https://data.tradingview.com"},
+                    timeout=30
+                )
+                # Handshake
+                self._ws.recv()
+                self._ws.send(_tv_header('{"m":"set_auth_token","p":["unauthorized_user_token"]}'))
+                self._ws.send(_tv_msg("quote_create_session", [session]))
+                self._ws.send(_tv_msg("quote_set_fields", [session, "lp", "ch", "chp", "high_price", "low_price", "open_price", "volume"]))
+                self._ws.send(_tv_msg("quote_add_symbols", [session, "OANDA:XAUUSD"]))
+
+                while self._running:
+                    data = self._ws.recv()
+                    if "lp" in data:
+                        lp = _re.findall(r'"lp":([\d.]+)', data)
+                        if lp: self.price = float(lp[0])
+                        ch = _re.findall(r'"ch":([-\d.]+)', data)
+                        if ch: self.change = float(ch[0])
+                        hp = _re.findall(r'"high_price":([\d.]+)', data)
+                        if hp: self.high = float(hp[0])
+                        lpp = _re.findall(r'"low_price":([\d.]+)', data)
+                        if lpp: self.low = float(lpp[0])
+                        op = _re.findall(r'"open_price":([\d.]+)', data)
+                        if op: self.open = float(op[0])
+                        self.last_update = time.time()
+                    # Respond to pings
+                    if data.startswith("~m~") and "~h~" in data:
+                        self._ws.send(data)
+            except Exception as e:
+                print(f"WS error: {e} — reconnecting in 5s")
+                time.sleep(5)
 
     async def fetch_price(self):
-        """Fetch current XAUUSD price from Yahoo Finance."""
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(YAHOO_QUOTE_URL, params={
-                    "interval": "5m", "range": "5d",
-                    "includePrePost": "false"
-                }, headers={"User-Agent": "Mozilla/5.0"})
-                if r.status_code == 200:
-                    data = r.json()
-                    result = data["chart"]["result"][0]
-                    meta = result["meta"]
-                    self.price = meta.get("regularMarketPrice", 0)
-                    # Build 5m bars from the response
-                    ts = result.get("timestamp", [])
-                    quotes = result.get("indicators", {}).get("quote", [{}])[0]
-                    opens = quotes.get("open", [])
-                    highs = quotes.get("high", [])
-                    lows = quotes.get("low", [])
-                    closes = quotes.get("close", [])
-                    self.bars_5m = []
-                    for i in range(len(ts)):
-                        if opens[i] and highs[i] and lows[i] and closes[i]:
-                            self.bars_5m.append((ts[i], opens[i], highs[i], lows[i], closes[i]))
-                    # Build 15m and 1h by resampling
-                    self._resample()
-                    self.last_update = time.time()
-        except Exception as e:
-            print(f"Price fetch error: {e}")
+        """Build 5m bars from accumulated ticks. Called every 30s by the scan loop."""
+        # TradingView gives us live price continuously via the websocket thread.
+        # Here we just need to build candle bars for indicator computation.
+        # Use Yahoo as a FALLBACK for historical 5m bars (needed for EMA/ATR calc).
+        if not self.bars_5m or time.time() - self.last_update > 60:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    r = await client.get(
+                        "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
+                        params={"interval": "5m", "range": "5d", "includePrePost": "false"},
+                        headers={"User-Agent": "Mozilla/5.0"}
+                    )
+                    if r.status_code == 200:
+                        data = r.json()
+                        result = data["chart"]["result"][0]
+                        ts = result.get("timestamp", [])
+                        quotes = result.get("indicators", {}).get("quote", [{}])[0]
+                        opens = quotes.get("open", [])
+                        highs = quotes.get("high", [])
+                        lows = quotes.get("low", [])
+                        closes = quotes.get("close", [])
+                        self.bars_5m = []
+                        for i in range(len(ts)):
+                            if opens[i] and highs[i] and lows[i] and closes[i]:
+                                self.bars_5m.append((ts[i], opens[i], highs[i], lows[i], closes[i]))
+                        self._resample()
+            except Exception as e:
+                print(f"Bar fetch fallback error: {e}")
 
     def _resample(self):
-        """Resample 5m bars to 15m and 1h."""
-        self.bars_15m = self._merge_bars(self.bars_5m, 3)   # 3x5m = 15m
-        self.bars_1h = self._merge_bars(self.bars_5m, 12)   # 12x5m = 1h
+        self.bars_15m = self._merge_bars(self.bars_5m, 3)
+        self.bars_1h = self._merge_bars(self.bars_5m, 12)
 
     @staticmethod
     def _merge_bars(bars, factor):
         merged = []
         for i in range(0, len(bars) - factor + 1, factor):
             chunk = bars[i:i+factor]
-            merged.append((
-                chunk[0][0],
-                chunk[0][1],
-                max(b[2] for b in chunk),
-                min(b[3] for b in chunk),
-                chunk[-1][4]
-            ))
+            merged.append((chunk[0][0], chunk[0][1], max(b[2] for b in chunk), min(b[3] for b in chunk), chunk[-1][4]))
         return merged
 
     async def fetch_yields(self):
-        """Fetch latest DFII10 from FRED."""
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(FRED_URL)
                 if r.status_code == 200:
                     lines = r.text.strip().splitlines()
-                    # Parse last few values
                     vals = []
                     for line in lines[-15:]:
                         parts = line.split(",")
                         if len(parts) == 2 and parts[1].strip() and parts[1].strip() != ".":
-                            try:
-                                vals.append(float(parts[1]))
-                            except:
-                                pass
+                            try: vals.append(float(parts[1]))
+                            except: pass
                     if len(vals) >= 2:
                         self.yield_value = vals[-1]
                         self.yield_change = vals[-1] - vals[-8] if len(vals) >= 8 else vals[-1] - vals[0]
@@ -483,6 +534,7 @@ TERMINAL_HTML = FRONTEND_DIR / "signal_terminal.html"
 
 @app.on_event("startup")
 async def startup():
+    feed.start_websocket()  # TradingView real-time price in background thread
     asyncio.create_task(price_loop())
     asyncio.create_task(yield_loop())
 
