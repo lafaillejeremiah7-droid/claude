@@ -567,7 +567,7 @@ async def market_status_loop():
             if is_open:
                 await send_telegram("Yo XAUUSD market just opened. Bot is scanning. Signals coming when conditions align.")
             else:
-                await send_telegram("Yo XAUUSD market just closed. No signals until Sunday 10pm UTC.")
+                await send_telegram("Yo XAUUSD market just closed. No signals until Sunday 22:00 UTC (market reopens).")
         was_open = is_open
         await asyncio.sleep(60)
 
