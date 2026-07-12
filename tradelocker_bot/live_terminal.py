@@ -493,7 +493,7 @@ class DashboardState:
         hours_active = now.hour not in (21, 22)
 
         return {
-            "mode": "paper",
+            "mode": "live",
             "equity": self.equity,
             "current_price": f.price,
             "atr": round(atr_val, 2),
