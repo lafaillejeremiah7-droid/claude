@@ -691,7 +691,7 @@ async def price_loop():
             await state.check_open_trades()
         except Exception as e:
             print(f"Trade monitor: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(15)
 
 async def yield_loop():
     while True:
