@@ -79,6 +79,7 @@ class LiveFeed:
         self.yield_value = 0.0
         self.yield_change = 0.0
         self.last_update = 0.0
+        self._bars_fetched_at = 0.0
         self._ws = None
         self._ws_thread = None
         self._running = False
@@ -128,34 +129,41 @@ class LiveFeed:
                 time.sleep(5)
 
     async def fetch_price(self):
-        """Build 5m bars from accumulated ticks. Called every 30s by the scan loop."""
-        # TradingView gives us live price continuously via the websocket thread.
-        # Here we just need to build candle bars for indicator computation.
-        # Use Yahoo as a FALLBACK for historical 5m bars (needed for EMA/ATR calc).
-        if not self.bars_5m or time.time() - self.last_update > 60:
-            try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    r = await client.get(
-                        "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
-                        params={"interval": "5m", "range": "5d", "includePrePost": "false"},
-                        headers={"User-Agent": "Mozilla/5.0"}
-                    )
-                    if r.status_code == 200:
-                        data = r.json()
-                        result = data["chart"]["result"][0]
-                        ts = result.get("timestamp", [])
-                        quotes = result.get("indicators", {}).get("quote", [{}])[0]
-                        opens = quotes.get("open", [])
-                        highs = quotes.get("high", [])
-                        lows = quotes.get("low", [])
-                        closes = quotes.get("close", [])
-                        self.bars_5m = []
-                        for i in range(len(ts)):
-                            if opens[i] and highs[i] and lows[i] and closes[i]:
-                                self.bars_5m.append((ts[i], opens[i], highs[i], lows[i], closes[i]))
-                        self._resample()
-            except Exception as e:
-                print(f"Bar fetch fallback error: {e}")
+        """Fetch 5-day historical bars from Forexite (same source as backtest). One-time + refresh every 30min."""
+        if self.bars_5m and time.time() - self._bars_fetched_at < 1800:
+            return  # bars fresh enough, TradingView websocket handles live price
+        try:
+            from datetime import date as _date, timedelta as _td
+            import zipfile, io
+            async with httpx.AsyncClient(timeout=15) as client:
+                all_rows = []
+                for offset in range(1, 6):
+                    d = _date.today() - _td(days=offset)
+                    dd = d.strftime("%d%m%y")
+                    url = f"http://www.forexite.com/free_forex_quotes/{d.year}/{d.month:02d}/{dd}.zip"
+                    r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+                    if r.status_code == 200 and len(r.content) > 100:
+                        z = zipfile.ZipFile(io.BytesIO(r.content))
+                        for fn in z.namelist():
+                            for line in z.open(fn).read().decode("utf-8", "ignore").splitlines():
+                                if line.startswith("XAUUSD,"):
+                                    p = line.split(",")
+                                    if len(p) == 7:
+                                        all_rows.append(p)
+                if all_rows:
+                    import pandas as _pd
+                    df = _pd.DataFrame(all_rows, columns=["T","D","Tm","O","H","L","C"])
+                    for col in ["O","H","L","C"]: df[col] = df[col].astype(float)
+                    df["dt"] = _pd.to_datetime(df["D"]+df["Tm"], format="%Y%m%d%H%M%S")
+                    df = df.set_index("dt").sort_index()
+                    # Resample to 5m
+                    d5 = df.resample("5min").agg({"O":"first","H":"max","L":"min","C":"last"}).dropna()
+                    self.bars_5m = [(int(ts.timestamp()), r["O"], r["H"], r["L"], r["C"]) for ts, r in d5.iterrows()]
+                    self._resample()
+                    self._bars_fetched_at = time.time()
+                    print(f"Bars loaded: {len(self.bars_5m)} 5m from Forexite")
+        except Exception as e:
+            print(f"Bar fetch error: {e}")
 
     def _resample(self):
         self.bars_15m = self._merge_bars(self.bars_5m, 3)
