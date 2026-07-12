@@ -250,6 +250,7 @@ class DashboardState:
         self.active_signal = None
         self.last_signal_time = 0
         self._today = None
+        self._open_trades = []  # tracks signals sent, monitors for TP/SL hits
         # Signal cooldown: minimum seconds between signals
         self.SIGNAL_COOLDOWN = 180  # 3 minutes between signals
         self.MAX_SIGNALS_DAY = 4
@@ -432,6 +433,111 @@ class DashboardState:
         await send_telegram(msg)
         print(f"[{ts_str}] SIGNAL SENT: {arrow} @ {entry:.2f}")
 
+        # Track this trade for P&L monitoring
+        self._open_trades.append({
+            "direction": direction,
+            "entry": entry,
+            "sl": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "tp_final": tp_final,
+            "lots": lots,
+            "risk_dollars": round(risk_dollars, 2),
+            "time": ts_str,
+            "tp1_hit": False,
+            "tp2_hit": False,
+        })
+
+    async def check_open_trades(self):
+        """Monitor open trades against live price. Send Telegram on TP/SL hit."""
+        if not self._open_trades or self.feed.price <= 0:
+            return
+        
+        price = self.feed.price
+        closed = []
+        
+        for i, trade in enumerate(self._open_trades):
+            d = trade["direction"]
+            hit = None
+            
+            if d == "buy":
+                if price <= trade["sl"]:
+                    if trade["tp1_hit"]:
+                        hit = "BREAKEVEN"
+                        pnl = trade["lots"] * 100 * (trade["tp1"] - trade["entry"]) * 0.10
+                    else:
+                        hit = "SL HIT"
+                        pnl = -trade["risk_dollars"]
+                elif price >= trade["tp1"] and not trade["tp1_hit"]:
+                    trade["tp1_hit"] = True
+                    trade["sl"] = trade["entry"]  # move SL to BE
+                    pnl_tp1 = trade["lots"] * 100 * (trade["tp1"] - trade["entry"]) * 0.10
+                    await send_telegram(f"TP1 HIT +${pnl_tp1:.2f} (closed 10%) | SL moved to breakeven | Riding 90%")
+                elif price >= trade["tp2"] and not trade["tp2_hit"]:
+                    trade["tp2_hit"] = True
+                    trade["sl"] = trade["tp1"]  # move SL to TP1
+                    pnl_tp2 = trade["lots"] * 100 * (trade["tp2"] - trade["entry"]) * 0.20
+                    await send_telegram(f"TP2 HIT +${pnl_tp2:.2f} (closed 20%) | SL moved to TP1 | Riding 70%")
+                elif price >= trade["tp_final"]:
+                    hit = "FINAL TP HIT"
+                    pnl = trade["lots"] * 100 * (
+                        0.10 * (trade["tp1"] - trade["entry"]) +
+                        0.20 * (trade["tp2"] - trade["entry"]) +
+                        0.70 * (trade["tp_final"] - trade["entry"])
+                    )
+            else:  # sell
+                if price >= trade["sl"]:
+                    if trade["tp1_hit"]:
+                        hit = "BREAKEVEN"
+                        pnl = trade["lots"] * 100 * (trade["entry"] - trade["tp1"]) * 0.10
+                    else:
+                        hit = "SL HIT"
+                        pnl = -trade["risk_dollars"]
+                elif price <= trade["tp1"] and not trade["tp1_hit"]:
+                    trade["tp1_hit"] = True
+                    trade["sl"] = trade["entry"]
+                    pnl_tp1 = trade["lots"] * 100 * (trade["entry"] - trade["tp1"]) * 0.10
+                    await send_telegram(f"TP1 HIT +${pnl_tp1:.2f} (closed 10%) | SL moved to breakeven | Riding 90%")
+                elif price <= trade["tp2"] and not trade["tp2_hit"]:
+                    trade["tp2_hit"] = True
+                    trade["sl"] = trade["tp1"]
+                    pnl_tp2 = trade["lots"] * 100 * (trade["entry"] - trade["tp2"]) * 0.20
+                    await send_telegram(f"TP2 HIT +${pnl_tp2:.2f} (closed 20%) | SL moved to TP1 | Riding 70%")
+                elif price <= trade["tp_final"]:
+                    hit = "FINAL TP HIT"
+                    pnl = trade["lots"] * 100 * (
+                        0.10 * (trade["entry"] - trade["tp1"]) +
+                        0.20 * (trade["entry"] - trade["tp2"]) +
+                        0.70 * (trade["entry"] - trade["tp_final"])
+                    )
+            
+            if hit:
+                arrow = "BUY" if d == "buy" else "SELL"
+                if "TP" in hit:
+                    emoji = "WIN"
+                    await send_telegram(f"{emoji} {hit} | {arrow} from {trade['entry']:.2f}\nProfit: +${pnl:.2f}\nFull multi-TP captured.")
+                elif hit == "BREAKEVEN":
+                    await send_telegram(f"BREAKEVEN | {arrow} from {trade['entry']:.2f}\nTP1 was banked (+${pnl:.2f}), rest closed at entry.")
+                else:
+                    await send_telegram(f"LOSS | {arrow} from {trade['entry']:.2f}\nSL hit: -${abs(pnl):.2f}")
+                
+                self.daily_pnl += pnl
+                self.equity += pnl
+                closed.append(i)
+                
+                self.signal_feed.append({
+                    "time": datetime.now(timezone.utc).strftime("%H:%M"),
+                    "type": "win" if pnl > 0 else "loss",
+                    "label": hit,
+                    "text": f"${pnl:+.2f}"
+                })
+        
+        for i in sorted(closed, reverse=True):
+            self._open_trades.pop(i)
+        
+        if not self._open_trades:
+            self.active_signal = None
+
 
     def compute_snapshot(self) -> dict:
         f = self.feed
@@ -581,6 +687,10 @@ async def price_loop():
             await state.check_and_signal()
         except Exception as e:
             print(f"Signal check: {e}")
+        try:
+            await state.check_open_trades()
+        except Exception as e:
+            print(f"Trade monitor: {e}")
         await asyncio.sleep(30)
 
 async def yield_loop():
