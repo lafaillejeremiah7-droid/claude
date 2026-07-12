@@ -400,12 +400,19 @@ class XAUUSDSignalEngine:
     # ---- hard account guards (funded-account rules) ----
     def _account_blocked(self) -> Optional[str]:
         c = self.cfg
-        # max drawdown breach
-        if (self._peak_equity - self._equity) >= c.max_drawdown:
-            return "max_drawdown_reached"
-        if (c.account_size - self._equity) >= c.max_drawdown:
-            return "max_drawdown_reached"
-        # daily loss stop (stop at 90% of the limit for safety)
+        # Static max drawdown: equity floor = account_size - max_drawdown ($4,600).
+        # Buffer: halt new entries once DD reaches (max_drawdown - max possible
+        # single-trade loss), so no open trade can ever push equity below the floor.
+        # At 0.12 lots × ~$11 ATR worst case = ~$132 max loss; use $140 buffer.
+        dd_buffer = 140.0
+        current_dd = self._peak_equity - self._equity
+        if current_dd >= (c.max_drawdown - dd_buffer):
+            return "max_drawdown_buffer_reached"
+        # Absolute floor check (static: starting balance - 8%)
+        if self._equity <= (c.account_size - c.max_drawdown):
+            return "max_drawdown_floor_breached"
+        # Static daily loss: floor = today's starting balance - 5%.
+        # We stop at 90% of the limit ($225) for safety margin.
         if self._daily_pnl <= -c.daily_stop_at:
             return "daily_loss_limit_reached"
         # margin / concurrent-position cap (1:10 leverage reality)
