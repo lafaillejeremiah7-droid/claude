@@ -233,9 +233,182 @@ body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11
 <script>
 // Clock
 setInterval(()=>{const d=new Date();document.getElementById('clock').textContent=d.toUTCString().slice(17,25)},1000);
-// Placeholder: in production this connects to /api/snapshot and /api/stream
-// For now, show the static structure with demo data
-document.getElementById('total-pnl').textContent='$0.00';
+
+// Live data connection
+const API_BASE = window.location.origin;
+let evtSource = null;
+
+async function loadSnapshot() {
+  try {
+    const res = await fetch(API_BASE + '/api/snapshot');
+    if (!res.ok) return;
+    const data = await res.json();
+    updateDashboard(data);
+  } catch(e) { console.log('Snapshot fetch error:', e); }
+}
+
+function connectStream() {
+  if (evtSource) evtSource.close();
+  evtSource = new EventSource(API_BASE + '/api/stream');
+  evtSource.onmessage = (evt) => {
+    try {
+      const data = JSON.parse(evt.data);
+      if (data && data.equity !== undefined) updateDashboard(data);
+    } catch(e) {}
+  };
+  evtSource.onerror = () => { setTimeout(connectStream, 5000); };
+}
+
+function updateDashboard(d) {
+  // P&L
+  const pnl = (d.equity || 5000) - 5000;
+  const el = document.getElementById('total-pnl');
+  el.textContent = (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+  el.className = 'big-num' + (pnl < 0 ? ' neg' : '');
+
+  // Stats
+  if (d.trades !== undefined) document.getElementById('st-trades').textContent = d.trades;
+  if (d.win_rate !== undefined) {
+    document.getElementById('st-wr').textContent = (d.win_rate*100).toFixed(0)+'%';
+    document.getElementById('winpct').textContent = (d.win_rate*100).toFixed(0)+'%';
+  }
+  if (d.avg_r !== undefined) {
+    document.getElementById('st-avgr').textContent = (d.avg_r>=0?'+':'') + d.avg_r.toFixed(2)+'R';
+    document.getElementById('avgr').textContent = (d.avg_r>=0?'+':'') + d.avg_r.toFixed(2);
+  }
+  if (d.profit_factor !== undefined) document.getElementById('st-pf').textContent = d.profit_factor.toFixed(2);
+  if (d.max_dd !== undefined) document.getElementById('st-dd').textContent = '$'+d.max_dd.toFixed(2);
+  if (d.signals_count !== undefined) document.getElementById('sig-count').textContent = d.signals_count;
+  if (d.trades_per_day !== undefined) document.getElementById('tpd').textContent = d.trades_per_day.toFixed(1);
+
+  // Equity
+  if (d.equity !== undefined) document.getElementById('br-equity').textContent = '$'+d.equity.toFixed(2);
+
+  // Price
+  if (d.current_price !== undefined) document.getElementById('price').textContent = d.current_price.toFixed(2);
+  if (d.atr !== undefined) document.getElementById('atr-val').textContent = '$'+d.atr.toFixed(2);
+
+  // Trend
+  if (d.trend_1h !== undefined) {
+    const td = document.getElementById('trend-dir');
+    td.textContent = d.trend_1h > 0 ? 'BULL' : (d.trend_1h < 0 ? 'BEAR' : 'FLAT');
+    td.className = d.trend_1h > 0 ? 'up' : (d.trend_1h < 0 ? 'dn' : '');
+  }
+
+  // Real yields
+  if (d.yield_value !== undefined) document.getElementById('ry-current').textContent = d.yield_value.toFixed(2)+'%';
+  if (d.yield_change !== undefined) {
+    const yc = document.getElementById('ry-change');
+    yc.textContent = (d.yield_change>=0?'+':'') + d.yield_change.toFixed(3);
+    yc.className = d.yield_change < 0 ? 'up' : 'dn';
+    document.getElementById('yield-dir').textContent = d.yield_change < 0 ? 'FALLING' : 'RISING';
+    document.getElementById('yield-dir').className = d.yield_change < 0 ? 'dn' : 'up';
+  }
+  if (d.yield_alignment !== undefined) {
+    const ya = document.getElementById('ry-align');
+    ya.textContent = (d.yield_alignment>=0?'+':'') + d.yield_alignment.toFixed(2);
+    ya.style.color = d.yield_alignment > 0.3 ? 'var(--green)' : (d.yield_alignment < -0.3 ? 'var(--red)' : 'var(--dim)');
+  }
+
+  // ASWP probabilities
+  if (d.p_tp1 !== undefined) {
+    document.getElementById('p-tp1').style.width = (d.p_tp1*100)+'%';
+    document.getElementById('p-tp1-val').textContent = (d.p_tp1*100).toFixed(0)+'%';
+  }
+  if (d.p_tp2 !== undefined) {
+    document.getElementById('p-tp2').style.width = (d.p_tp2*100)+'%';
+    document.getElementById('p-tp2-val').textContent = (d.p_tp2*100).toFixed(0)+'%';
+  }
+  if (d.p_tp3 !== undefined) {
+    document.getElementById('p-tp3').style.width = (d.p_tp3*100)+'%';
+    document.getElementById('p-tp3-val').textContent = (d.p_tp3*100).toFixed(0)+'%';
+  }
+
+  // EV
+  if (d.current_ev !== undefined) {
+    const ev = document.getElementById('ev-val');
+    ev.textContent = (d.current_ev>=0?'+':'') + d.current_ev.toFixed(2)+'R';
+    ev.className = 'ev-display ' + (d.current_ev >= 0 ? 'pos' : 'neg');
+  }
+  if (d.memory_size !== undefined) document.getElementById('mem-count').textContent = d.memory_size + ' trades';
+
+  // DD guards
+  if (d.daily_pnl !== undefined) {
+    const dp = d.daily_pnl;
+    document.getElementById('daily-pnl-val').textContent = (dp>=0?'+':'')+'$'+dp.toFixed(2);
+    document.getElementById('daily-pnl-val').style.color = dp >= 0 ? 'var(--green)' : 'var(--red)';
+    const ddLeft = 250 + Math.min(dp, 0);
+    document.getElementById('dd-daily').textContent = '$'+ddLeft.toFixed(0)+' left';
+    document.getElementById('dd-daily-bar').style.width = (ddLeft/250*100)+'%';
+    document.getElementById('dd-daily-bar').className = 'meter-fill ' + (ddLeft>150?'safe':ddLeft>75?'warn':'danger');
+  }
+  if (d.max_dd !== undefined) {
+    const mLeft = 400 - d.max_dd;
+    document.getElementById('dd-max').textContent = '$'+mLeft.toFixed(0)+' left';
+    document.getElementById('dd-max-bar').style.width = (mLeft/400*100)+'%';
+    document.getElementById('dd-max-bar').className = 'meter-fill ' + (mLeft>200?'safe':mLeft>100?'warn':'danger');
+  }
+
+  // Active signal
+  if (d.active_signal) {
+    const s = d.active_signal;
+    document.getElementById('active-signal').innerHTML = `
+      <div class="dir ${s.direction}">${s.direction.toUpperCase()} ${s.lot_size} lots</div>
+      <div class="levels">
+        <span class="lbl">ENTRY</span><span class="lv">${s.entry.toFixed(2)}</span>
+        <span class="lbl">SL</span><span class="lv">${s.sl.toFixed(2)} (-$${s.risk_dollars.toFixed(0)})</span>
+        <span class="lbl">TP1</span><span class="lv">${s.tp1.toFixed(2)} (close 10%, SL->BE)</span>
+        <span class="lbl">TP2</span><span class="lv">${s.tp2.toFixed(2)} (close 20%, SL->TP1)</span>
+        <span class="lbl">FINAL</span><span class="lv">${s.tp_final.toFixed(2)} (ride 70%)</span>
+        <span class="lbl">P(TP1)</span><span class="lv">${(s.probability*100).toFixed(0)}%</span>
+        <span class="lbl">EV</span><span class="lv">${s.expected_value_r.toFixed(2)}R</span>
+      </div>`;
+  }
+
+  // Pipeline
+  const stages = ['p1','p2','p3','p4','p5','p6','p7'];
+  const active = d.pipeline_stage || 0;
+  stages.forEach((id, i) => {
+    document.getElementById(id).className = 'pipe-step' + (i < active ? ' active' : '');
+  });
+
+  // Conviction gate
+  if (d.scanned !== undefined) document.getElementById('cg-scanned').textContent = d.scanned;
+  if (d.ev_passed !== undefined) document.getElementById('cg-passed').textContent = d.ev_passed;
+  if (d.deployed !== undefined) document.getElementById('cg-deployed').textContent = d.deployed;
+
+  // Session guards
+  if (d.guards) {
+    document.getElementById('g-news').textContent = 'NEWS: ' + (d.guards.news_clear ? 'CLEAR' : 'BLACKOUT');
+    document.getElementById('g-news').style.color = d.guards.news_clear ? 'var(--green)' : 'var(--red)';
+    document.getElementById('g-weekend').textContent = 'WEEKEND: ' + (d.guards.weekend_clear ? 'CLEAR' : 'BLOCKED');
+    document.getElementById('g-weekend').style.color = d.guards.weekend_clear ? 'var(--green)' : 'var(--red)';
+    document.getElementById('g-hours').textContent = 'HOURS: ' + (d.guards.hours_active ? 'ACTIVE' : 'THIN');
+    document.getElementById('g-hours').style.color = d.guards.hours_active ? 'var(--green)' : 'var(--amber)';
+    document.getElementById('g-signals').textContent = 'SIGNALS TODAY: ' + (d.signals_today||0) + ' / 2';
+  }
+
+  // Feed
+  if (d.feed && d.feed.length) {
+    const feedEl = document.getElementById('feed');
+    feedEl.innerHTML = d.feed.slice(0, 30).map(f => {
+      const cls = f.type === 'win' ? 'win' : (f.type === 'loss' ? 'loss' : 'signal');
+      return `<div class="feed-item"><span class="time">${f.time||''}</span><span class="action ${cls}">${f.label||''}</span><span>${f.text||''}</span></div>`;
+    }).join('');
+  }
+
+  // Mode
+  if (d.mode) {
+    const badge = document.getElementById('mode-badge');
+    badge.textContent = d.mode.toUpperCase();
+    badge.style.background = d.mode === 'live' ? 'var(--green)' : 'var(--amber)';
+  }
+}
+
+// Boot
+loadSnapshot();
+connectStream();
+setInterval(loadSnapshot, 10000); // fallback poll every 10s
 </script>
 </body>
 </html>

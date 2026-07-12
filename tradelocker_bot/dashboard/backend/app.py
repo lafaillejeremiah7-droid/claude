@@ -169,6 +169,16 @@ def create_app(env: Optional[dict] = None) -> FastAPI:
         except OSError:
             return HTMLResponse("<h1>Dashboard frontend not found</h1>", status_code=500)
 
+    SIGNAL_TERMINAL_HTML = FRONTEND_DIR / "signal_terminal.html"
+
+    @app.get("/terminal", response_class=HTMLResponse)
+    async def signal_terminal():
+        """Serve the XAUUSD ASWP signal terminal dashboard (dark theme)."""
+        try:
+            return HTMLResponse(SIGNAL_TERMINAL_HTML.read_text(encoding="utf-8"))
+        except OSError:
+            return HTMLResponse("<h1>Signal terminal not found</h1>", status_code=500)
+
     @app.get("/api/health")
     async def health():
         return {
