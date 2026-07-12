@@ -24,102 +24,18 @@ from starlette.responses import StreamingResponse
 import uvicorn
 
 # ---------------------------------------------------------------------------
-# Backtest results (from real 4.5-year walk-forward validation)
+# Backtest results — REAL trades from actual 1-minute XAUUSD candles
 # ---------------------------------------------------------------------------
 
-BACKTEST = {
-    "total_trades": 1130,
-    "win_rate": 0.60,
-    "avg_r": 1.108,
-    "total_r": 1252.4,
-    "years": {
-        2022: {"trades": 202, "wr": 0.60, "avg_r": 1.108, "total_r": 223.8},
-        2023: {"trades": 265, "wr": 0.60, "avg_r": 1.064, "total_r": 282.0},
-        2024: {"trades": 236, "wr": 0.62, "avg_r": 1.155, "total_r": 272.5},
-        2025: {"trades": 272, "wr": 0.58, "avg_r": 1.075, "total_r": 292.5},
-        2026: {"trades": 155, "wr": 0.62, "avg_r": 1.171, "total_r": 181.6},
-    },
-    "max_dd_dollars": 287.74,
-    "worst_day": -158.74,
-    "final_equity": 26506,
-    "start_equity": 5000,
-    "config": {
-        "sl": "1.0x ATR",
-        "tp1": "1.0R (close 10%)",
-        "tp2": "2.0R (close 20%)",
-        "final": "3.0R (ride 70%)",
-        "min_ev": 0.9,
-        "max_per_day": 2,
-        "dd_buffer": 140,
-    }
-}
+import json as _json
+_TRADES_FILE = Path(__file__).parent / "real_trades.json"
 
-# Generate synthetic trade sequence matching the real statistics
-def generate_trade_sequence():
-    """Create 1,130 trades with the real distribution."""
-    trades = []
-    random.seed(42)  # deterministic replay
-    equity = 5000.0
-    peak = 5000.0
-    max_dd = 0.0
-    
-    # Gold price trajectory (rough approximation of 2022-2026)
-    prices = {2022: (1800, 1650, 1820), 2023: (1820, 1810, 2060),
-              2024: (2060, 2000, 2650), 2025: (2650, 3200, 3900),
-              2026: (3900, 4100, 4300)}
-    
-    for year, ydata in BACKTEST["years"].items():
-        p_start, p_low, p_end = prices[year]
-        for i in range(ydata["trades"]):
-            # Determine if win or loss based on real win rate
-            is_win = random.random() < ydata["wr"]
-            
-            # R-multiple: winners get the runner distribution, losers get -1
-            if is_win:
-                # 82% of winners hit 3R, rest partial
-                if random.random() < 0.82:
-                    r = 0.10*1.0 + 0.20*2.0 + 0.70*3.0  # 2.6R full
-                else:
-                    r = 0.10*1.0 + random.uniform(0, 0.5)  # partial ~0.1-0.6R
-            else:
-                r = -1.0
-            
-            # Position sizing (volatility-aware, ~$50-100 risk)
-            frac = i / ydata["trades"]
-            price = p_start + (p_end - p_start) * frac
-            atr = price * 0.002 * random.uniform(0.7, 1.5)  # ~0.2% of price
-            risk = min(equity * 0.015, 112)  # capped
-            pnl = risk * r
-            
-            equity += pnl
-            peak = max(peak, equity)
-            dd = peak - equity
-            max_dd = max(max_dd, dd)
-            
-            direction = random.choice(["buy", "sell"])
-            sl_dist = atr
-            
-            trades.append({
-                "year": year,
-                "trade_num": len(trades) + 1,
-                "direction": direction,
-                "entry": round(price, 2),
-                "sl": round(price + sl_dist * (-1 if direction == "buy" else 1), 2),
-                "tp1": round(price + sl_dist * (1 if direction == "buy" else -1), 2),
-                "tp2": round(price + sl_dist * (2 if direction == "buy" else -2), 2),
-                "tp_final": round(price + sl_dist * (3 if direction == "buy" else -3), 2),
-                "r": round(r, 2),
-                "pnl": round(pnl, 2),
-                "is_win": is_win,
-                "equity_after": round(equity, 2),
-                "max_dd": round(max_dd, 2),
-                "atr": round(atr, 2),
-                "risk": round(risk, 2),
-            })
-    
-    return trades
+def load_real_trades():
+    with open(_TRADES_FILE) as f:
+        return _json.load(f)
 
-TRADES = generate_trade_sequence()
+TRADES = load_real_trades()
+print(f"Loaded {len(TRADES)} real trades from walk-forward backtest")
 
 # ---------------------------------------------------------------------------
 # Replay state
@@ -153,25 +69,33 @@ class ReplayState:
         if idx == 0 and not self.started:
             return self._idle_snapshot()
         
-        # Compute running stats up to current trade
+        # Compute running stats up to current trade (REAL data)
         trades_so_far = TRADES[:idx+1]
-        wins = sum(1 for t in trades_so_far if t["is_win"])
+        wins = sum(1 for t in trades_so_far if t["win"])
         total = len(trades_so_far)
         wr = wins / total if total > 0 else 0
         avg_r = sum(t["r"] for t in trades_so_far) / total if total > 0 else 0
         
         current = TRADES[idx]
-        equity = current["equity_after"]
-        max_dd = current["max_dd"]
+        equity = current["eq"]
+        max_dd = current["dd"]
         pnl_total = equity - 5000
         
-        # Build feed from last 20 trades
+        # Profit factor
+        gross_win = sum(t["pnl"] for t in trades_so_far if t["pnl"] > 0)
+        gross_loss = abs(sum(t["pnl"] for t in trades_so_far if t["pnl"] < 0))
+        pf = gross_win / gross_loss if gross_loss > 0 else 99
+        
+        # Best trade
+        best = max(t["pnl"] for t in trades_so_far)
+        
+        # Feed from last 20
         feed_items = []
         for t in trades_so_far[-20:]:
-            tp = "win" if t["is_win"] else "loss"
-            label = f"{t['direction'].upper()} {'WIN' if t['is_win'] else 'LOSS'}"
+            tp = "win" if t["win"] else "loss"
+            label = f"{t['dir'].upper()} {'WIN' if t['win'] else 'LOSS'}"
             feed_items.append({
-                "time": f"#{t['trade_num']}",
+                "time": t["ts"][5:16],
                 "type": tp,
                 "label": label,
                 "text": f"${t['entry']:.0f} | {t['r']:+.2f}R | ${t['pnl']:+.0f}"
@@ -179,48 +103,51 @@ class ReplayState:
         
         # Progress
         elapsed = time.time() - self.start_time if self.started else 0
-        progress_pct = min(100, idx / len(TRADES) * 100)
+        progress_pct = min(100, (idx+1) / len(TRADES) * 100)
         time_remaining = max(0, 540 - elapsed)
         
+        # Year from timestamp
+        year = current["ts"][:4]
+        
         return {
-            "mode": f"REPLAY {current['year']} ({progress_pct:.0f}%)",
+            "mode": f"REPLAY {year} ({progress_pct:.0f}%)",
             "equity": equity,
             "current_price": current["entry"],
             "atr": current["atr"],
-            "trend_1h": 1 if current["direction"] == "buy" else -1,
+            "trend_1h": 1 if current["dir"] == "buy" else -1,
             "yield_value": 2.15,
             "yield_change": -0.08,
-            "yield_alignment": 0.5 if current["is_win"] else -0.3,
-            "p_tp1": wr,
-            "p_tp2": wr * 0.92,
-            "p_tp3": wr * 0.81,
-            "current_ev": avg_r,
+            "yield_alignment": 0.5 if current["win"] else -0.3,
+            "p_tp1": current["p1"],
+            "p_tp2": round(current["p1"] * 0.92, 2),
+            "p_tp3": round(current["p1"] * 0.81, 2),
+            "current_ev": current["ev"],
             "memory_size": idx + 2500,
-            "pipeline_stage": 7 if current["is_win"] else 5,
+            "pipeline_stage": 7 if current["win"] else 5,
             "daily_pnl": current["pnl"],
             "max_dd": max_dd,
-            "signals_today": min(2, idx % 5),
+            "signals_today": 1,
             "signals_count": total,
             "trades": total,
             "win_rate": wr,
             "avg_r": avg_r,
-            "profit_factor": abs(sum(t["pnl"] for t in trades_so_far if t["pnl"]>0)) / (abs(sum(t["pnl"] for t in trades_so_far if t["pnl"]<0)) or 1),
-            "trades_per_day": total / (idx / self.speed / 86400 + 1) if self.started else 0,
+            "profit_factor": round(pf, 2),
+            "trades_per_day": 1.0,
             "scanned": total * 30,
             "ev_passed": total,
             "deployed": total,
             "guards": {"news_clear": True, "weekend_clear": True, "hours_active": True},
             "active_signal": {
-                "direction": current["direction"],
+                "direction": current["dir"],
                 "entry": current["entry"],
                 "sl": current["sl"],
                 "tp1": current["tp1"],
                 "tp2": current["tp2"],
-                "tp_final": current["tp_final"],
-                "lot_size": 0.06,
-                "risk_dollars": current["risk"],
-                "probability": round(wr, 2),
-                "expected_value_r": round(avg_r, 2),
+                "tp_final": current["final"],
+                "lot_size": current["lots"],
+                "risk_dollars": round(current["lots"] * 100 * (1.0 * current["atr"] + 0.15), 2),
+                "probability": current["p1"],
+                "expected_value_r": current["ev"],
             },
             "feed": feed_items,
             "replay": {
@@ -228,8 +155,9 @@ class ReplayState:
                 "total_trades": len(TRADES),
                 "elapsed_seconds": round(elapsed, 1),
                 "time_remaining": round(time_remaining, 1),
-                "year": current["year"],
+                "year": year,
                 "total_pnl": round(pnl_total, 2),
+                "best_trade": round(best, 2),
             }
         }
     
