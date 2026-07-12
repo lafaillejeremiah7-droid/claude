@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>XAUUSD ASWP SIGNAL TERMINAL</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0a0a;--panel:#111;--border:rgba(0,255,136,0.15);--green:#00ff88;--green2:#26d07c;--amber:#f0c419;--red:#ff4444;--dim:rgba(255,255,255,0.4);--text:#e8e8e8;--mono:'JetBrains Mono','SF Mono','Fira Code',Consolas,monospace}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:11px;line-height:1.4;overflow-x:hidden}
+.topbar{display:flex;align-items:center;height:26px;padding:0 12px;background:#080808;border-bottom:1px solid var(--border);gap:12px;font-size:10px;overflow:hidden}
+.topbar .brand{font-weight:700;color:var(--green);letter-spacing:2px;font-size:11px;white-space:nowrap}
+.topbar .stat{color:var(--dim)}
+.topbar .stat b{color:var(--text)}
+.topbar .live{background:var(--green);color:#000;padding:1px 8px;font-weight:700;font-size:9px;border-radius:2px;margin-left:auto}
+.ticker{height:18px;background:#070707;border-bottom:1px solid rgba(0,255,136,0.08);display:flex;align-items:center;padding:0 12px;font-size:9px;color:var(--dim);gap:16px;overflow:hidden}
+.ticker .up{color:var(--green)} .ticker .dn{color:var(--red)}
+.grid{display:grid;grid-template-columns:280px 1fr 260px;grid-template-rows:auto 1fr auto;gap:1px;padding:1px;height:calc(100vh - 44px)}
+.panel{background:var(--panel);border:1px solid var(--border);padding:10px 12px;position:relative;overflow:hidden}
+.panel-title{font-size:8px;letter-spacing:1.5px;text-transform:uppercase;color:var(--green);margin-bottom:6px;font-weight:700;opacity:0.7}
+.big-num{font-size:28px;font-weight:700;color:var(--green);text-shadow:0 0 12px rgba(0,255,136,0.3)}
+.big-num.neg{color:var(--red);text-shadow:0 0 12px rgba(255,68,68,0.3)}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;font-size:10px}
+.stat-grid .label{color:var(--dim)} .stat-grid .val{color:var(--text);font-weight:600}
+.equity-chart{width:100%;height:120px;margin-top:8px;border:1px solid rgba(0,255,136,0.1);background:#080808;position:relative}
+.equity-chart canvas{width:100%;height:100%}
+.signal-box{border:1px solid var(--green);padding:8px;margin-top:6px;background:rgba(0,255,136,0.03)}
+.signal-box .dir{font-size:16px;font-weight:700;letter-spacing:1px}
+.signal-box .dir.buy{color:var(--green)} .signal-box .dir.sell{color:var(--red)}
+.signal-box .levels{margin-top:6px;font-size:10px;display:grid;grid-template-columns:auto 1fr;gap:2px 8px}
+.signal-box .levels .lbl{color:var(--dim)} .signal-box .levels .lv{color:var(--text)}
+.pipeline{display:flex;gap:0;margin-top:8px}
+.pipe-step{flex:1;text-align:center;padding:4px 2px;font-size:8px;font-weight:700;letter-spacing:0.5px;border:1px solid var(--border);color:var(--dim);background:#080808}
+.pipe-step.active{color:var(--green);border-color:rgba(0,255,136,0.4);background:rgba(0,255,136,0.05);text-shadow:0 0 4px var(--green)}
+.matrix{width:100%;border-collapse:collapse;font-size:9px;margin-top:6px}
+.matrix th{color:var(--dim);font-weight:400;padding:2px 4px;text-align:center;border-bottom:1px solid var(--border)}
+.matrix td{padding:2px 4px;text-align:center;border-bottom:1px solid rgba(255,255,255,0.03)}
+.matrix .pos{color:var(--green)} .matrix .neg{color:var(--red)} .matrix .flat{color:var(--dim)}
+.feed{max-height:160px;overflow-y:auto;font-size:9px;margin-top:6px}
+.feed-item{display:flex;gap:6px;padding:2px 0;border-bottom:1px solid rgba(255,255,255,0.03)}
+.feed-item .time{color:var(--dim);width:45px;flex-shrink:0}
+.feed-item .action{padding:1px 4px;font-size:8px;font-weight:700;border-radius:1px}
+.feed-item .win{background:rgba(0,255,136,0.1);color:var(--green)}
+.feed-item .loss{background:rgba(255,68,68,0.1);color:var(--red)}
+.feed-item .signal{background:rgba(240,196,25,0.1);color:var(--amber)}
+.bottom-bar{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px}
+.meter{position:relative;height:8px;background:#1a1a1a;border-radius:4px;margin-top:4px;overflow:hidden}
+.meter-fill{height:100%;border-radius:4px;transition:width 0.3s}
+.meter-fill.safe{background:var(--green)} .meter-fill.warn{background:var(--amber)} .meter-fill.danger{background:var(--red)}
+.center-main{display:flex;flex-direction:column;gap:1px}
+.aswp-prob{display:flex;align-items:center;gap:8px;margin-top:8px}
+.aswp-prob .bar{flex:1;height:20px;background:#1a1a1a;border-radius:2px;position:relative;overflow:hidden}
+.aswp-prob .bar-fill{height:100%;background:linear-gradient(90deg,var(--green2),var(--green));border-radius:2px}
+.aswp-prob .pct{font-size:14px;font-weight:700;color:var(--green);min-width:40px;text-align:right}
+#clock{font-size:14px;font-weight:700;color:var(--amber);letter-spacing:1px}
+.ev-display{font-size:18px;font-weight:700;margin-top:4px}
+.ev-display.pos{color:var(--green)} .ev-display.neg{color:var(--red)}
+</style>
+</head>
+<body>
+<div class="topbar">
+<span class="brand">XAUUSD ASWP</span>
+<span class="stat">SIGNALS: <b id="sig-count">0</b></span>
+<span class="stat">TRADES/DAY: <b id="tpd">0</b></span>
+<span class="stat">WIN%: <b id="winpct">0%</b></span>
+<span class="stat">AVG R: <b id="avgr">+0.00</b></span>
+<span id="clock">00:00:00</span>
+<span class="live" id="mode-badge">PAPER</span>
+</div>
+<div class="ticker">
+<span>XAUUSD <span class="up" id="price">4,120.29</span></span>
+<span>ATR(5m): <b id="atr-val">$4.22</b></span>
+<span>SPREAD: <b>$0.30</b></span>
+<span>1H TREND: <span id="trend-dir" class="up">BULL</span></span>
+<span>YIELDS(DFII10): <span id="yield-val">2.31%</span> <span id="yield-dir" class="dn">FALLING</span></span>
+<span>EV GATE: <b id="ev-gate">0.9R</b></span>
+</div>
+<div class="grid">
+<!-- LEFT PANEL: P&L + Stats -->
+<div style="display:flex;flex-direction:column;gap:1px">
+<div class="panel">
+<div class="panel-title">ALL-TIME P&L - PAPER</div>
+<div class="big-num" id="total-pnl">$0.00</div>
+<div style="font-size:9px;color:var(--dim);margin-top:2px" id="pnl-sub">SINCE START - 0 DAYS</div>
+<div class="stat-grid">
+<span class="label">TRADES</span><span class="val" id="st-trades">0</span>
+<span class="label">WIN RATE</span><span class="val" id="st-wr">0%</span>
+<span class="label">AVG R</span><span class="val" id="st-avgr">+0.00R</span>
+<span class="label">PROFIT FACTOR</span><span class="val" id="st-pf">0.00</span>
+<span class="label">MAX DD</span><span class="val" id="st-dd">$0.00</span>
+<span class="label">BEST TRADE</span><span class="val" id="st-best">$0.00</span>
+</div>
+</div>
+<div class="panel">
+<div class="panel-title">EQUITY CURVE</div>
+<div class="equity-chart"><canvas id="eq-canvas"></canvas></div>
+</div>
+<div class="panel">
+<div class="panel-title">TOP 3 BIGGEST WINS</div>
+<div id="top-wins" style="font-size:10px">
+<div style="color:var(--dim)">No trades yet</div>
+</div>
+</div>
+</div>
+<!-- CENTER: Active Signal + Pipeline + Feed -->
+<div class="center-main">
+<div class="panel" style="flex:0 0 auto">
+<div class="panel-title">ACTIVE SIGNAL</div>
+<div class="signal-box" id="active-signal">
+<div style="color:var(--dim);text-align:center;padding:20px">SCANNING... waiting for EV >= 0.9R setup</div>
+</div>
+<div class="pipeline" style="margin-top:10px">
+<div class="pipe-step active" id="p1">1H TREND</div>
+<div class="pipe-step" id="p2">15m PULLBACK</div>
+<div class="pipe-step" id="p3">5m TRIGGER</div>
+<div class="pipe-step" id="p4">ASWP PROB</div>
+<div class="pipe-step" id="p5">EV GATE</div>
+<div class="pipe-step" id="p6">SIZE</div>
+<div class="pipe-step" id="p7">SIGNAL</div>
+</div>
+</div>
+<div class="panel" style="flex:0 0 auto">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div class="panel-title" style="margin:0">ASWP PROBABILITY</div>
+<div style="font-size:9px;color:var(--dim)">P(TP1) | P(TP2) | P(FINAL)</div>
+</div>
+<div class="aswp-prob">
+<div class="bar"><div class="bar-fill" id="p-tp1" style="width:0%"></div></div>
+<div class="pct" id="p-tp1-val">—</div>
+</div>
+<div class="aswp-prob">
+<div class="bar"><div class="bar-fill" id="p-tp2" style="width:50%"></div></div>
+<div class="pct" id="p-tp2-val">—</div>
+</div>
+<div class="aswp-prob">
+<div class="bar"><div class="bar-fill" id="p-tp3" style="width:30%"></div></div>
+<div class="pct" id="p-tp3-val">—</div>
+</div>
+<div style="display:flex;justify-content:space-between;margin-top:8px">
+<div><span style="color:var(--dim)">EV:</span> <span class="ev-display pos" id="ev-val">+0.00R</span></div>
+<div><span style="color:var(--dim)">MEMORY:</span> <span id="mem-count" style="color:var(--text)">0 trades</span></div>
+</div>
+</div>
+<div class="panel" style="flex:1;overflow:hidden">
+<div class="panel-title">SIGNAL FEED</div>
+<div class="feed" id="feed">
+<div class="feed-item"><span class="time">--:--</span><span style="color:var(--dim)">Waiting for first signal...</span></div>
+</div>
+</div>
+</div>
+<!-- RIGHT PANEL: Matrix + Guards -->
+<div style="display:flex;flex-direction:column;gap:1px">
+<div class="panel">
+<div class="panel-title">MULTI-TP ALLOCATION</div>
+<table class="matrix">
+<tr><th>LEVEL</th><th>R</th><th>CLOSE%</th><th>STATUS</th></tr>
+<tr><td>TP1</td><td>1.0R</td><td>10%</td><td class="flat" id="tp1-st">PENDING</td></tr>
+<tr><td>TP2</td><td>2.0R</td><td>20%</td><td class="flat" id="tp2-st">PENDING</td></tr>
+<tr><td>FINAL</td><td>3.0R</td><td>70%</td><td class="flat" id="tp3-st">PENDING</td></tr>
+</table>
+<div style="margin-top:8px;font-size:9px;color:var(--dim)">SL: 1.0x ATR | BE after TP1 | Trail after TP2</div>
+</div>
+<div class="panel">
+<div class="panel-title">ACCOUNT GUARDS</div>
+<div style="margin-top:4px">
+<div style="display:flex;justify-content:space-between;font-size:9px"><span>DAILY DD (5%)</span><span id="dd-daily">$250 left</span></div>
+<div class="meter"><div class="meter-fill safe" id="dd-daily-bar" style="width:100%"></div></div>
+</div>
+<div style="margin-top:8px">
+<div style="display:flex;justify-content:space-between;font-size:9px"><span>MAX DD (8%)</span><span id="dd-max">$400 left</span></div>
+<div class="meter"><div class="meter-fill safe" id="dd-max-bar" style="width:100%"></div></div>
+</div>
+<div style="margin-top:8px">
+<div style="display:flex;justify-content:space-between;font-size:9px"><span>MARGIN USED</span><span id="margin-used">0%</span></div>
+<div class="meter"><div class="meter-fill safe" id="margin-bar" style="width:0%"></div></div>
+</div>
+<div style="margin-top:8px;font-size:9px;color:var(--dim)">
+<div>LEVERAGE: 1:10 | LOTS: 0.01-0.12 | BUFFER: $140</div>
+<div style="margin-top:2px" id="guard-status">STATUS: ALL CLEAR</div>
+</div>
+</div>
+<div class="panel">
+<div class="panel-title">SESSION GUARDS</div>
+<div style="font-size:10px;margin-top:4px">
+<div id="g-news" style="color:var(--green)">NEWS: CLEAR</div>
+<div id="g-weekend" style="color:var(--green)">WEEKEND: CLEAR</div>
+<div id="g-hours" style="color:var(--green)">HOURS: ACTIVE</div>
+<div id="g-signals" style="color:var(--text);margin-top:4px">SIGNALS TODAY: 0 / 2</div>
+</div>
+</div>
+<div class="panel">
+<div class="panel-title">REAL YIELDS (DFII10)</div>
+<div style="font-size:10px;margin-top:4px">
+<div>CURRENT: <b id="ry-current">—</b></div>
+<div>7d CHANGE: <span id="ry-change">—</span></div>
+<div>ALIGNMENT: <span id="ry-align">—</span></div>
+</div>
+</div>
+</div>
+<!-- BOTTOM BAR -->
+<div class="bottom-bar">
+<div class="panel">
+<div class="panel-title">CONVICTION GATE</div>
+<div style="display:flex;gap:16px;align-items:baseline">
+<div><span style="color:var(--dim);font-size:9px">SCANNED</span><div style="font-size:18px;font-weight:700" id="cg-scanned">0</div></div>
+<div style="font-size:16px;color:var(--dim)">→</div>
+<div><span style="color:var(--dim);font-size:9px">EV PASSED</span><div style="font-size:18px;font-weight:700;color:var(--green)" id="cg-passed">0</div></div>
+<div style="font-size:16px;color:var(--dim)">→</div>
+<div><span style="color:var(--dim);font-size:9px">DEPLOYED</span><div style="font-size:18px;font-weight:700;color:var(--amber)" id="cg-deployed">0</div></div>
+</div>
+</div>
+<div class="panel">
+<div class="panel-title">DAILY P&L METER</div>
+<div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+<div style="font-size:18px;font-weight:700" id="daily-pnl-val">$0.00</div>
+<div style="flex:1">
+<div style="font-size:8px;display:flex;justify-content:space-between;color:var(--dim)"><span>-$250</span><span>$0</span><span>+$250</span></div>
+<div class="meter" style="height:10px"><div class="meter-fill safe" id="daily-meter" style="width:50%;margin-left:50%"></div></div>
+</div>
+</div>
+</div>
+<div class="panel">
+<div class="panel-title">BROKER STATE</div>
+<div style="font-size:10px;margin-top:4px">
+<div>EQUITY: <b id="br-equity">$5,000.00</b></div>
+<div>MARGIN: <b id="br-margin">$0.00</b></div>
+<div>FREE: <b id="br-free">$5,000.00</b></div>
+<div style="margin-top:4px;color:var(--green)" id="br-status">CONNECTED</div>
+</div>
+</div>
+</div>
+</div>
+<script>
+// Clock
+setInterval(()=>{const d=new Date();document.getElementById('clock').textContent=d.toUTCString().slice(17,25)},1000);
+// Placeholder: in production this connects to /api/snapshot and /api/stream
+// For now, show the static structure with demo data
+document.getElementById('total-pnl').textContent='$0.00';
+</script>
+</body>
+</html>
