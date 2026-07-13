@@ -57,6 +57,21 @@ import threading
 
 FRED_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=DFII10"
 
+# ---------------------------------------------------------------------------
+# TradeLocker API config (your AquaFunded demo account)
+#   - account id  = 2325106  (the "D#2325106" shown in the app)
+#   - accNum      = 4        (what the API 'accNum' header requires)
+# Same broker for BOTH live quotes and historical bars => indicators align
+# perfectly with the live price (no stale-data drift).
+# ---------------------------------------------------------------------------
+TL_URL = "https://demo.tradelocker.com/backend-api"
+TL_EMAIL = "lafaillejeremiah7@gmail.com"
+TL_PASS = ",3)m1U"
+TL_SERVER = "AQUA"
+TL_ACC_NUM = "4"            # accNum for account D#2325106
+TL_INSTRUMENT = "1714"      # XAUUSD tradableInstrumentId
+TL_ROUTE_INFO = "791554"    # XAUUSD INFO route (quotes + history)
+
 def _tv_session():
     return "qs_" + "".join(_random.choices(_string.ascii_lowercase, k=12))
 
@@ -86,6 +101,10 @@ class LiveFeed:
         self._ws = None
         self._ws_thread = None
         self._running = False
+        self._token = None
+        self._token_time = 0.0
+        self._token_lock = threading.Lock()
+        self.bars_source = "none"
 
     def start_websocket(self):
         """Start TradingView websocket + HTTP fallback in background thread."""
@@ -99,35 +118,11 @@ class LiveFeed:
     def _http_price_loop(self):
         """Primary: poll TradeLocker API for live XAUUSD price every 10s."""
         import requests as _req
-        TL_URL = "https://demo.tradelocker.com/backend-api"
-        TL_EMAIL = "lafaillejeremiah7@gmail.com"
-        TL_PASS = ",3)m1U"
-        TL_SERVER = "AQUA"
-        # NOTE: TradeLocker uses TWO identifiers for an account:
-        #   - account id  = 2325106  (the "D#2325106" you see in the app)
-        #   - accNum      = 4        (what the API 'accNum' header requires)
-        # The quotes endpoint needs accNum, NOT the display id.
-        TL_ACC_NUM = "4"            # accNum for account D#2325106
-        TL_INSTRUMENT = "1714"      # XAUUSD tradableInstrumentId
-        TL_ROUTE_INFO = "791554"    # XAUUSD INFO route (for quotes)
-        token = None
-        token_time = 0
         fail_count = 0
 
         while self._running:
             try:
-                # Refresh token every 5 min
-                if not token or time.time() - token_time > 300:
-                    r = _req.post(f"{TL_URL}/auth/jwt/token",
-                                  json={"email": TL_EMAIL, "password": TL_PASS, "server": TL_SERVER},
-                                  timeout=10)
-                    if r.status_code in (200, 201):
-                        token = r.json()["accessToken"]
-                        token_time = time.time()
-                    else:
-                        print(f"TradeLocker auth failed: {r.status_code} {r.text[:150]}")
-                        token = None
-
+                token = self._ensure_token()
                 if token:
                     r = _req.get(f"{TL_URL}/trade/quotes",
                                  headers={"Authorization": f"Bearer {token}", "accNum": TL_ACC_NUM},
@@ -149,10 +144,31 @@ class LiveFeed:
                         if fail_count <= 3 or fail_count % 10 == 0:
                             print(f"TradeLocker quote failed: {r.status_code} {r.text[:150]}")
                         if r.status_code in (401, 403):
-                            token = None  # force re-auth
+                            self._token = None  # force re-auth
             except Exception as e:
                 print(f"TradeLocker price error: {e}")
             time.sleep(10)
+
+    def _ensure_token(self):
+        """Return a valid TradeLocker JWT, refreshing if older than 5 min. Thread-safe."""
+        import requests as _req
+        with self._token_lock:
+            if self._token and time.time() - self._token_time < 300:
+                return self._token
+            try:
+                r = _req.post(f"{TL_URL}/auth/jwt/token",
+                              json={"email": TL_EMAIL, "password": TL_PASS, "server": TL_SERVER},
+                              timeout=10)
+                if r.status_code in (200, 201):
+                    self._token = r.json()["accessToken"]
+                    self._token_time = time.time()
+                else:
+                    print(f"TradeLocker auth failed: {r.status_code} {r.text[:150]}")
+                    self._token = None
+            except Exception as e:
+                print(f"TradeLocker auth error: {e}")
+                self._token = None
+            return self._token
 
     def _ws_loop(self):
         """Persistent websocket connection to TradingView for real-time XAUUSD."""
@@ -193,9 +209,54 @@ class LiveFeed:
                 time.sleep(5)
 
     async def fetch_price(self):
-        """Fetch 5-day historical bars from Forexite (same source as backtest). One-time + refresh every 30min."""
-        if self.bars_5m and time.time() - self._bars_fetched_at < 1800:
-            return  # bars fresh enough, TradingView websocket handles live price
+        """Load historical 5m bars. Primary: TradeLocker (same broker as live price,
+        always current). Fallback: Forexite. Refreshes every ~5 min so the newest
+        candles stay aligned with the live quote."""
+        if self.bars_5m and time.time() - self._bars_fetched_at < 300:
+            return  # bars fresh enough
+        # Try TradeLocker history first (fresh, aligned with live price)
+        if await self._fetch_bars_tradelocker():
+            return
+        # Fallback to Forexite if TradeLocker history unavailable
+        await self._fetch_bars_forexite()
+
+    async def _fetch_bars_tradelocker(self) -> bool:
+        """Fetch 5m bars from TradeLocker history endpoint (last ~10 days)."""
+        try:
+            token = self._ensure_token()
+            if not token:
+                return False
+            now_ms = int(time.time() * 1000)
+            from_ms = now_ms - 10 * 24 * 3600 * 1000
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(
+                    f"{TL_URL}/trade/history",
+                    headers={"Authorization": f"Bearer {token}", "accNum": TL_ACC_NUM},
+                    params={"routeId": TL_ROUTE_INFO, "tradableInstrumentId": TL_INSTRUMENT,
+                            "resolution": "5m", "from": from_ms, "to": now_ms},
+                )
+            if r.status_code != 200:
+                print(f"TradeLocker history failed: {r.status_code} {r.text[:150]}")
+                return False
+            bars = r.json().get("d", {}).get("barDetails", [])
+            if not bars:
+                return False
+            self.bars_5m = [
+                (int(b["t"] / 1000), float(b["o"]), float(b["h"]), float(b["l"]), float(b["c"]))
+                for b in bars
+            ]
+            self._resample()
+            self._bars_fetched_at = time.time()
+            self.bars_source = "TradeLocker"
+            last_c = self.bars_5m[-1][4]
+            print(f"Bars loaded: {len(self.bars_5m)} 5m from TradeLocker (last close {last_c:.2f})")
+            return True
+        except Exception as e:
+            print(f"TradeLocker bar fetch error: {e}")
+            return False
+
+    async def _fetch_bars_forexite(self):
+        """Fallback: fetch 5-day historical bars from Forexite."""
         try:
             from datetime import date as _date, timedelta as _td
             import zipfile, io
@@ -225,9 +286,10 @@ class LiveFeed:
                     self.bars_5m = [(int(ts.timestamp()), r["O"], r["H"], r["L"], r["C"]) for ts, r in d5.iterrows()]
                     self._resample()
                     self._bars_fetched_at = time.time()
-                    print(f"Bars loaded: {len(self.bars_5m)} 5m from Forexite")
+                    self.bars_source = "Forexite"
+                    print(f"Bars loaded: {len(self.bars_5m)} 5m from Forexite (fallback)")
         except Exception as e:
-            print(f"Bar fetch error: {e}")
+            print(f"Forexite bar fetch error: {e}")
 
     def _resample(self):
         self.bars_15m = self._merge_bars(self.bars_5m, 3)
@@ -782,7 +844,14 @@ async def snapshot():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "price": feed.price, "last_update": feed.last_update}
+    return {
+        "status": "ok",
+        "price": feed.price,
+        "price_source": feed.price_source,
+        "bars_source": feed.bars_source,
+        "bars_5m": len(feed.bars_5m),
+        "last_update": feed.last_update,
+    }
 
 @app.get("/api/stream")
 async def stream(request: Request):
