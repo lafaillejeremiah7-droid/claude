@@ -18,8 +18,10 @@ Open the Linux Terminal app and run:
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-pip git
+sudo apt install -y python3 python3-pip python3-venv python3-full git
 ```
+
+> **Note:** Newer Debian/Python versions (3.11+) block system-wide pip installs (PEP 668). The `start.sh` script automatically creates and uses a **virtual environment** to handle this cleanly — no `--break-system-packages` hacks needed.
 
 Verify installation:
 ```bash
@@ -181,9 +183,24 @@ Chromebook Linux containers can be resource-limited. If the bot is slow:
 chmod +x start.sh
 ```
 
-### "ModuleNotFoundError" even after installing
+### "ModuleNotFoundError" (e.g. No module named 'httpx')
+This happens when deps didn't install into the venv. Fix it:
 ```bash
-pip3 install --user --upgrade fastapi uvicorn httpx websocket-client pandas requests
+cd ~/claude/tradelocker_bot
+rm -rf venv
+./start.sh
+```
+The script rebuilds the virtual environment and reinstalls everything.
+
+### "error: externally-managed-environment"
+This is PEP 668 blocking system-wide installs. The updated `start.sh` handles it automatically by using a venv. Just make sure you have venv support:
+```bash
+sudo apt install python3-venv python3-full
+```
+
+### "Failed to create venv"
+```bash
+sudo apt install python3-venv python3-full
 ```
 
 ### Can't access http://localhost:5000
