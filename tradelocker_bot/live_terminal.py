@@ -472,7 +472,7 @@ class DashboardState:
         self._open_trades = []  # tracks signals sent, monitors for TP/SL hits
         # Signal cooldown: minimum seconds between signals
         self.SIGNAL_COOLDOWN = 3600  # 60 minutes between signals (was 180s/3min — too fast for 1m entry)
-        self.MAX_SIGNALS_DAY = 3
+        self.MAX_SIGNALS_DAY = 2
         self.MIN_EV = 0.55
 
         # --- ADAPTIVE SL/TP (validated via 100,000-trial random search on
