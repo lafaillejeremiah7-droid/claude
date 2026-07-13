@@ -211,10 +211,11 @@ function connectStream(){
   evtSource.onerror=()=>{evtSource.close();rd=Math.min(rd*1.5,15000);setTimeout(connectStream,rd)};
 }
 function updateDashboard(d){
-  const pnl=(d.equity||5000)-5000;
+  const pnl=(d.all_time_pnl!==undefined)?d.all_time_pnl:((d.equity||5000)-5000);
   const el=document.getElementById('total-pnl');
-  el.textContent=(pnl>=0?'+':'')+'$'+Math.abs(pnl).toFixed(2);
+  el.textContent=(pnl>=0?'+':'-')+'$'+Math.abs(pnl).toFixed(2);
   el.className='big-num'+(pnl<0?' neg':'');
+  if(d.wins!==undefined&&d.losses!==undefined){document.getElementById('pnl-sub').textContent='SIGNALS: '+d.wins+'W / '+d.losses+'L'}
   if(d.trades!==undefined)document.getElementById('st-trades').textContent=d.trades.toLocaleString();
   if(d.win_rate!==undefined)document.getElementById('st-wr').textContent=(d.win_rate*100).toFixed(1)+'%';
   if(d.avg_r!==undefined)document.getElementById('st-avgr').textContent=d.avg_r.toFixed(2);

@@ -371,18 +371,36 @@ def compute_rsi(closes, period=14):
 # Dashboard state (computed from live data)
 # ---------------------------------------------------------------------------
 
+# File to persist signal P&L history across restarts
+SIGNAL_PNL_FILE = Path(__file__).parent / "signal_pnl.json"
+
+def _load_signal_pnl():
+    """Load persisted signal P&L data (survives restarts)."""
+    try:
+        if SIGNAL_PNL_FILE.exists():
+            data = json.loads(SIGNAL_PNL_FILE.read_text())
+            return data
+    except Exception as e:
+        print(f"signal_pnl.json load error: {e}")
+    return {"all_time_pnl": 0.0, "total_signals": 0, "wins": 0, "losses": 0, "results": []}
+
+def _save_signal_pnl(data):
+    """Persist signal P&L data to disk."""
+    try:
+        SIGNAL_PNL_FILE.write_text(json.dumps(data, indent=2))
+    except Exception as e:
+        print(f"signal_pnl.json save error: {e}")
+
+
 class DashboardState:
     def __init__(self, feed: LiveFeed):
         self.feed = feed
         self.signals_today = 0
-        self.total_signals = 0
         self.scanned = 0
         self.ev_passed = 0
         self.signal_feed = []
-        self.equity = 5000.0
         self.daily_pnl = 0.0
         self.max_dd = 0.0
-        self.peak = 5000.0
         self.active_signal = None
         self.last_signal_time = 0
         self._today = None
@@ -391,6 +409,26 @@ class DashboardState:
         self.SIGNAL_COOLDOWN = 180  # 3 minutes between signals
         self.MAX_SIGNALS_DAY = 4
         self.MIN_EV = 0.55
+        # Load persisted signal P&L from disk (survives restarts)
+        pnl_data = _load_signal_pnl()
+        self.all_time_pnl = pnl_data.get("all_time_pnl", 0.0)
+        self.total_signals = pnl_data.get("total_signals", 0)
+        self.wins = pnl_data.get("wins", 0)
+        self.losses = pnl_data.get("losses", 0)
+        self.signal_results = pnl_data.get("results", [])  # history of each signal outcome
+        self.equity = 5000.0 + self.all_time_pnl  # reflects cumulative signal P&L
+        self.peak = max(self.equity, 5000.0)
+        print(f"Signal P&L loaded: all_time={self.all_time_pnl:+.2f} | signals={self.total_signals} | W/L={self.wins}/{self.losses}")
+
+    def _persist_pnl(self):
+        """Save current signal P&L state to disk."""
+        _save_signal_pnl({
+            "all_time_pnl": round(self.all_time_pnl, 2),
+            "total_signals": self.total_signals,
+            "wins": self.wins,
+            "losses": self.losses,
+            "results": self.signal_results[-200:],  # keep last 200 results
+        })
 
     async def check_and_signal(self):
         """Run the full entry logic and send Telegram if a signal fires."""
@@ -659,6 +697,28 @@ class DashboardState:
                 
                 self.daily_pnl += pnl
                 self.equity += pnl
+                self.all_time_pnl += pnl
+                if pnl > 0:
+                    self.wins += 1
+                else:
+                    self.losses += 1
+                # Track peak and max drawdown
+                if self.equity > self.peak:
+                    self.peak = self.equity
+                dd = self.peak - self.equity
+                if dd > self.max_dd:
+                    self.max_dd = dd
+                # Record result
+                self.signal_results.append({
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "direction": d,
+                    "entry": trade["entry"],
+                    "exit_type": hit,
+                    "pnl": round(pnl, 2),
+                    "all_time_pnl": round(self.all_time_pnl, 2),
+                })
+                # Persist to disk (survives restarts)
+                self._persist_pnl()
                 closed.append(i)
                 
                 self.signal_feed.append({
@@ -754,10 +814,13 @@ class DashboardState:
             "signals_today": self.signals_today,
             "signals_count": self.total_signals,
             "trades": self.total_signals,
-            "win_rate": 0.60,
-            "avg_r": 1.108,
-            "profit_factor": 2.4,
+            "win_rate": self.wins / max(1, self.wins + self.losses),
+            "avg_r": (self.all_time_pnl / max(1, self.wins + self.losses)) if (self.wins + self.losses) > 0 else 0.0,
+            "profit_factor": (self.wins / max(1, self.losses)) if self.losses > 0 else 0.0,
             "trades_per_day": 1.0,
+            "all_time_pnl": round(self.all_time_pnl, 2),
+            "wins": self.wins,
+            "losses": self.losses,
             "scanned": self.scanned,
             "ev_passed": self.ev_passed,
             "deployed": self.total_signals,
