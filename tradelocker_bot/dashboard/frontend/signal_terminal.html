@@ -57,6 +57,50 @@ body{background:#0a0a0a;color:#fff;font-family:"JetBrains Mono","SF Mono","Fira 
 .log-entry .info{color:#666}
 .log-entry .cyan{color:#00ccff}
 .log-entry .signal{color:#00ff88;font-weight:700}
+
+/* POP-UP NOTIFICATIONS */
+.popup-overlay{position:fixed;top:0;left:0;right:0;bottom:0;pointer-events:none;z-index:9999;display:flex;align-items:center;justify-content:center}
+.popup{pointer-events:auto;padding:28px 48px;border-radius:6px;text-align:center;font-family:"JetBrains Mono",monospace;animation:popIn 0.3s ease-out;box-shadow:0 0 60px rgba(0,0,0,0.8);position:relative;max-width:420px}
+.popup.fadeout{animation:popOut 0.5s ease-in forwards}
+@keyframes popIn{0%{transform:scale(0.5);opacity:0}100%{transform:scale(1);opacity:1}}
+@keyframes popOut{0%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(0.85)}}
+
+/* TP1 HIT - subtle blue/cyan */
+.popup.tp1{background:#0a1a2a;border:2px solid #00ccff;color:#00ccff}
+.popup.tp1 .popup-icon{font-size:32px;margin-bottom:8px;color:#00ccff}
+.popup.tp1 .popup-title{font-size:18px;font-weight:700;letter-spacing:1px}
+.popup.tp1 .popup-detail{font-size:11px;color:#66ddff;margin-top:8px;letter-spacing:0.5px}
+.popup.tp1 .popup-sub{font-size:9px;color:#446688;margin-top:6px}
+
+/* TP2 HIT - amber/gold */
+.popup.tp2{background:#1a1500;border:2px solid #ffaa00;color:#ffaa00}
+.popup.tp2 .popup-icon{font-size:32px;margin-bottom:8px;color:#ffaa00}
+.popup.tp2 .popup-title{font-size:18px;font-weight:700;letter-spacing:1px}
+.popup.tp2 .popup-detail{font-size:11px;color:#ffcc44;margin-top:8px;letter-spacing:0.5px}
+.popup.tp2 .popup-sub{font-size:9px;color:#886622;margin-top:6px}
+
+/* FULL WIN - bright green celebration */
+.popup.win{background:#001a0a;border:2px solid #00ff88;color:#00ff88}
+.popup.win .popup-icon{font-size:42px;margin-bottom:8px;color:#00ff88;text-shadow:0 0 20px #00ff88}
+.popup.win .popup-title{font-size:22px;font-weight:700;letter-spacing:2px;text-shadow:0 0 10px rgba(0,255,136,0.5)}
+.popup.win .popup-detail{font-size:13px;color:#66ffaa;margin-top:10px;letter-spacing:0.5px}
+.popup.win .popup-sub{font-size:10px;color:#338855;margin-top:8px}
+.popup.win::before{content:'';position:absolute;inset:-2px;border-radius:8px;background:linear-gradient(45deg,#00ff88,transparent,#00ff88);opacity:0.3;z-index:-1;animation:winGlow 1.5s infinite alternate}
+@keyframes winGlow{0%{opacity:0.2;filter:blur(8px)}100%{opacity:0.5;filter:blur(12px)}}
+
+/* SL HIT - red loss */
+.popup.sl{background:#1a0505;border:2px solid #ff4444;color:#ff4444}
+.popup.sl .popup-icon{font-size:32px;margin-bottom:8px;color:#ff4444}
+.popup.sl .popup-title{font-size:18px;font-weight:700;letter-spacing:1px}
+.popup.sl .popup-detail{font-size:11px;color:#ff6666;margin-top:8px}
+.popup.sl .popup-sub{font-size:9px;color:#884444;margin-top:6px}
+
+/* BREAKEVEN */
+.popup.be{background:#111111;border:2px solid #888888;color:#cccccc}
+.popup.be .popup-icon{font-size:32px;margin-bottom:8px;color:#888}
+.popup.be .popup-title{font-size:18px;font-weight:700;letter-spacing:1px}
+.popup.be .popup-detail{font-size:11px;color:#aaa;margin-top:8px}
+.popup.be .popup-sub{font-size:9px;color:#555;margin-top:6px}
 </style>
 </head>
 <body>
@@ -481,6 +525,110 @@ function updateDashboard(d) {
     if (d.guards.weekend_clear) status.push('wknd:clear');
     if (d.guards.hours_active) status.push('hours:active');
     addLogEntry('info', 'Guards: ' + status.join(' | '));
+  }
+
+  // Check for popup-worthy events
+  checkForPopups(d);
+}
+
+// ===== POP-UP NOTIFICATION SYSTEM =====
+let activePopup = null;
+
+function showPopup(type, title, detail, sub, duration) {
+  // Remove any existing popup
+  if (activePopup) {
+    activePopup.remove();
+    activePopup = null;
+  }
+  const overlay = document.createElement('div');
+  overlay.className = 'popup-overlay';
+  const popup = document.createElement('div');
+  popup.className = 'popup ' + type;
+
+  let icon = '';
+  if (type === 'win') icon = '[ WIN ]';
+  else if (type === 'tp1') icon = '[ TP1 ]';
+  else if (type === 'tp2') icon = '[ TP2 ]';
+  else if (type === 'sl') icon = '[ SL ]';
+  else if (type === 'be') icon = '[ BE ]';
+
+  popup.innerHTML = '<div class="popup-icon">' + icon + '</div>'
+    + '<div class="popup-title">' + title + '</div>'
+    + '<div class="popup-detail">' + detail + '</div>'
+    + '<div class="popup-sub">' + sub + '</div>';
+
+  overlay.appendChild(popup);
+  document.body.appendChild(overlay);
+  activePopup = overlay;
+
+  // Click to dismiss early
+  overlay.addEventListener('click', () => {
+    overlay.remove();
+    activePopup = null;
+  });
+
+  // Auto-dismiss after duration
+  const dur = duration || 5000;
+  setTimeout(() => {
+    if (activePopup === overlay) {
+      popup.classList.add('fadeout');
+      setTimeout(() => {
+        if (activePopup === overlay) {
+          overlay.remove();
+          activePopup = null;
+        }
+      }, 500);
+    }
+  }, dur);
+}
+
+// Track feed entries we've already shown popups for
+let lastPopupFeedLength = 0;
+
+function checkForPopups(d) {
+  if (!d.feed || !d.feed.length) return;
+  if (d.feed.length <= lastPopupFeedLength) return;
+
+  // Check new feed entries
+  const newEntries = d.feed.slice(0, d.feed.length - lastPopupFeedLength);
+  lastPopupFeedLength = d.feed.length;
+
+  for (const entry of newEntries) {
+    if (!entry.label) continue;
+    const label = entry.label.toUpperCase();
+    const text = entry.text || '';
+
+    if (label.includes('FINAL TP') || label.includes('FULL')) {
+      showPopup('win',
+        'FULL TARGET HIT',
+        text,
+        'All 3 take-profit levels captured. Signal closed.',
+        7000);
+    } else if (label.includes('TP1')) {
+      showPopup('tp1',
+        'TP1 REACHED',
+        text + ' | 10% closed',
+        'SL moved to breakeven. Riding remaining 90%.',
+        5000);
+    } else if (label.includes('TP2')) {
+      showPopup('tp2',
+        'TP2 REACHED',
+        text + ' | 20% closed',
+        'SL moved to TP1. Riding remaining 70%.',
+        5000);
+    } else if (label.includes('BREAKEVEN') || label.includes('BE')) {
+      showPopup('be',
+        'BREAKEVEN',
+        text,
+        'TP1 was banked. Rest closed at entry.',
+        4000);
+    } else if (label.includes('SL HIT') || label.includes('LOSS')) {
+      showPopup('sl',
+        'STOP LOSS HIT',
+        text,
+        'Signal closed at stop loss.',
+        4000);
+    }
   }
 }
 
