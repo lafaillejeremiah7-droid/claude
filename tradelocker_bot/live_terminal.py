@@ -500,29 +500,37 @@ class DashboardState:
         # premature stop-outs; a real runner (TP2 2.75R, Final ~4.7R) still catches
         # gold's big moves. Result vs old live: WR 51%->68%, $30->$50/wk, DD gate
         # FAIL->PASS. Wins on EVERY axis, both datasets.
-        self.ADAPT_BASE_SL = 1.158
-        self.ADAPT_VOL_LO = 0.8559
-        self.ADAPT_VOL_HI = 1.0723
-        self.ADAPT_TREND_GAIN = 1.82
+        # --- PHASE-15 MAX-DOLLARS GEOMETRY (dollars-first, validated both datasets) ---
+        # Honest note: the coherent, gate-safe ceiling for 1-2 trades/day in this
+        # window is ~$54-60/wk. (Earlier ~$130/wk figures were DEGENERATE — they
+        # relied on broken TP ladders where "Final" fell below TP1/TP2; rejected.)
+        # This config: bank ~45% instantly at a 0.45R target (locks the win, WR
+        # stays 64-70%), tiny 16% mid leg, then a BIG 39% runner to 5.3-15.7R that
+        # catches gold's strong-trend moves — that runner is where the extra
+        # dollars come from. Beats the prior config on BOTH $/wk and win rate.
+        self.ADAPT_BASE_SL = 1.1342
+        self.ADAPT_VOL_LO = 0.3460
+        self.ADAPT_VOL_HI = 1.2653
+        self.ADAPT_TREND_GAIN = 1.1363
         # Runner (Final TP) = TP3_R_BASE * clip(1 + TREND_GAIN*(ts-1), LO, HI)
-        # -> realized Final R in ~[3.9, 6.3], averaging ~4.7R.
-        self.TP1_R = 0.50               # first partial — CLOSE (the win-rate lever)
-        self.TP2_R = 2.75               # second partial
-        self.TP3_R_BASE = 4.70          # runner base R (before trend extension)
-        self.TP_EXT_LO = 0.833
-        self.TP_EXT_HI = 1.333
+        # -> realized Final R in ~[5.3, 15.7], averaging ~6.3R.
+        self.TP1_R = 0.45               # first partial — VERY CLOSE (locks the win)
+        self.TP2_R = 3.16               # second partial
+        self.TP3_R_BASE = 6.26          # runner base R (before trend extension)
+        self.TP_EXT_LO = 0.849
+        self.TP_EXT_HI = 2.509
 
-        # Multi-TP harvest allocation: front-loaded 49/30/21 (phase-14 validated).
-        # Banks nearly half at the close 0.50R target -> high win rate, while the
-        # 30% mid leg + 21% runner keep weekly profit high.
-        self.ALLOC_A1 = 0.49
-        self.ALLOC_A2 = 0.30            # A3 = 1 - A1 - A2 = 0.21
-        self.ALLOC_TILT = 0.09          # shift to runner when trend is strong
+        # Multi-TP harvest allocation: 45/16/39 (phase-15). Nearly half banked at
+        # the 0.45R target for the win, then a large 39% runner swings for gold's
+        # big trends — that is the dollar engine.
+        self.ALLOC_A1 = 0.45
+        self.ALLOC_A2 = 0.16            # A3 = 1 - A1 - A2 = 0.39
+        self.ALLOC_TILT = 0.08          # shift to runner when trend is strong
         self.TILT_TREND_MIN = 1.0       # trend_strength >= this = "strong"
         # Drawdown circuit-breaker risk engine — lets us run higher base risk
         # ($45 vs $25) safely: +37% vs flat-$25, static $4,600 floor never
         # breached across 2025-26, 2023-24, and 4.5yr.
-        self.RISK_BASE = 45.0           # base $ risk per signal
+        self.RISK_BASE = 47.0           # base $ risk per signal (phase-15 dollar-max)
         # SESSION WINDOW (rebuild v2): only signal during the London/NY overlap
         # + NY session, 12-20 UTC. This is where gold's directional edge lives.
         # Keeping $45 risk but restricting sessions: 2025-26 DD $407->$312 (gate

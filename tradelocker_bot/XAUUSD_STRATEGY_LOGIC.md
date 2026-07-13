@@ -69,27 +69,32 @@ the DD gate** on 2025-26 ($391 > $350). Re-optimizing for this exact regime foun
 the honest optimum — **pull TP1 in close so price tags it far more often**:
 
 ```
-SL    = 1.158 × clip(vol_ratio, 0.856, 1.072) × ATR(15m)   (WIDER → fewer premature stops)
+SL    = 1.134 × clip(vol_ratio, 0.346, 1.265) × ATR(15m)
         vol_ratio = current 15m ATR ÷ its 50-bar rolling average
-TP1   = 0.50R  (close A1=49%, SL→breakeven)   ← the win-rate lever
-TP2   = 2.75R  (close A2=30%, SL→TP1)
-Final = 4.70R × clip(1 + 1.82×(trend_strength−1), 0.833, 1.333)  (ride A3=21%)
-        → realized Final ≈ 3.9R (weak trend) to 6.3R (strong), avg ~4.7R
+TP1   = 0.45R  (close A1=45%, SL→breakeven)   ← locks the win instantly
+TP2   = 3.16R  (close A2=16%, SL→TP1)
+Final = 6.26R × clip(1 + 1.14×(trend_strength−1), 0.849, 2.509)  (ride A3=39%)
+        → realized Final ≈ 5.3R (weak trend) up to 15.7R (strong)
 ```
 
-**Why it works:** once price tags the close 0.50R TP1, 49% is banked and SL jumps
-to breakeven — the trade can no longer become a full loss. That single change
-lifts win rate from ~51% to ~68%. The wider SL cuts stop-hunts, and the 30% mid
-leg + 21% runner (to 2.75R / ~4.7R) still capture gold's big moves, so weekly
-profit *rises* even while banking early.
+**Why it works (dollars-first):** once price tags the very close 0.45R TP1, 45%
+is banked and SL jumps to breakeven — the trade can no longer become a full loss
+(WR stays 64-70%). Then a **large 39% runner** rides to 5.3-15.7R and captures
+gold's big strong-trend moves — that runner is the dollar engine.
+
+**Honest ceiling:** for 1-2 trades/day in the 12-20 UTC window, staying inside
+the DD gate, the coherent maximum is ~$54-60/wk. (Earlier ~$130/wk figures were
+DEGENERATE — they exploited broken TP ladders where the "Final" TP fell below
+TP1/TP2; rejected as non-implementable.) To make materially more, you need more
+trades/day or a larger account — profit scales linearly with account size.
 
 ---
 
 ## 6. Multi-TP harvest allocation (Phase-4 validated upgrade)
 
 ```
-DEFAULT:     A1=49%  A2=30%  A3=21%   (phase-14; front-loaded to lock wins early)
-STRONG TREND: tilt ~9% back toward A3 (runner rides more in strong 1H trends)
+DEFAULT:     A1=45%  A2=16%  A3=39%   (phase-15; lock the win, then a big runner)
+STRONG TREND: tilt ~8% back toward A3 (runner rides more in strong 1H trends)
 ```
 
 Why front-loaded? Phase 3 proved gold runs to TP1/TP2 then frequently reverses
@@ -181,19 +186,19 @@ These are the **real** numbers for the exact geometry the bot runs, measured on
 both datasets. (Earlier docs quoted higher figures that used a research-file
 geometry which never matched the deployed bot — corrected here.)
 
-| | OLD geometry (TP1 1R) | **PHASE-14 (TP1 0.50R)** |
+| | OLD geometry (TP1 1R) | **PHASE-15 (dollars-first)** |
 |---|---|---|
-| 2025-26 $/wk | +$30 | **+$50** |
-| 2025-26 win rate | 51% | **68%** |
-| 2025-26 max DD | $391 (**FAILS $350 gate**) | **$315 (PASS)** |
-| 2023-24 $/wk | +$25 | **+$50** |
-| 2023-24 win rate | 53% | **63%** |
-| 2023-24 max DD | $331 | **$231** |
+| 2025-26 $/wk | +$30 | **+$54** |
+| 2025-26 win rate | 51% | **70%** |
+| 2025-26 max DD | $391 (**FAILS $350 gate**) | **$308 (PASS)** |
+| 2023-24 $/wk | +$25 | **+$55** |
+| 2023-24 win rate | 53% | **64%** |
+| 2023-24 max DD | $331 | **$259** |
 | signals/day | ~1.7-1.9 | ~1.7-1.9 |
 
-The phase-14 geometry wins on **every axis** — profit, win rate, and drawdown —
-on both datasets, at the max-2/day cap. It is the honest ceiling found for this
-regime (WR and $/week trade off; this is the balanced max of WR × $/week).
+The phase-15 geometry wins on **every axis** — profit, win rate, and drawdown —
+on both datasets, at the max-2/day cap. It is the honest *dollar* ceiling for this
+regime (~$54-60/wk; higher $/wk requires more trades/day or a larger account).
 
 ---
 
