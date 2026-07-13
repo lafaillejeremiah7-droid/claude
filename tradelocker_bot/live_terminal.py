@@ -702,8 +702,15 @@ class DashboardState:
         # Adaptive TP3 (runner leg) extension: scales with how strong the
         # 1H trend is. TP1/TP2 stay at fixed 1R/2R off the (adaptive) sl_dist;
         # only the final 70% runner leg extends/contracts with trend strength.
-        tp_ext = 1 + self.ADAPT_TREND_GAIN * (trend_strength - 1)
-        tp_ext = min(self.ADAPT_TP_HI, max(self.ADAPT_TP_LO, tp_ext))
+        # Adaptive TP3 (runner leg) extension — CLAMPED to 2.5R-4R so it's:
+        #   (a) always ABOVE TP2 (2R) — no broken ordering
+        #   (b) always REACHABLE within a realistic trending session (~$19-31)
+        # Scales gently with trend strength: weak trend = 2.5R, strong = 4R.
+        tp_ext_raw = 1 + self.ADAPT_TREND_GAIN * (trend_strength - 1)
+        # Map to the 2.5-4R band (Final R-multiple = tp3_r * tp_ext effectively)
+        # tp3_r_effective = clamp between 2.5 and 4.0
+        tp3_r = min(4.0, max(2.5, 3.0 * min(self.ADAPT_TP_HI, max(self.ADAPT_TP_LO, tp_ext_raw))))
+        tp3_move = tp3_r * base_move
 
         # Per-signal multi-TP harvest allocation (front-loaded 30/40/30, with a
         # runner-tilt in strong trends).
@@ -748,7 +755,6 @@ class DashboardState:
             lots = max(0.01, round(int((self.equity * 0.95 * leverage / (contract * entry)) * 100) / 100, 2))
 
         risk_dollars = lots * loss_per_lot
-        tp3_move = 3.0 * base_move * tp_ext
 
         if direction == "buy":
             sl = round(entry - sl_dist, 2)
