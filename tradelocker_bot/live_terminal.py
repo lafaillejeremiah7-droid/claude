@@ -534,11 +534,11 @@ class DashboardState:
         spread = 0.30
         sl_dist = sl_mult * atr_val + spread / 2
 
-        # Position sizing: capped at 0.12 lots, risk bounded
+        # Position sizing: risk $60 max per signal
         contract = 100.0
         leverage = 10.0
         loss_per_lot = contract * sl_dist
-        max_loss = 250.0 * 0.45  # 45% of daily limit
+        max_loss = 60.0  # $60 max risk per signal
         lots = min(0.12, max_loss / loss_per_lot)
         lots = max(0.01, round(int(lots * 100) / 100, 2))  # round to 0.01 step
 
