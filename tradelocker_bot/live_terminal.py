@@ -94,21 +94,43 @@ class LiveFeed:
         self._http_thread.start()
 
     def _http_price_loop(self):
-        """Backup: poll Yahoo for live price every 10s if websocket fails."""
+        """Primary: poll TradeLocker API for live XAUUSD price every 10s."""
         import requests as _req
+        TL_URL = "https://demo.tradelocker.com/backend-api"
+        TL_EMAIL = "lafaillejeremiah7@gmail.com"
+        TL_PASS = ",3)m1U"
+        TL_SERVER = "AQUA"
+        TL_ACC_NUM = "4"
+        TL_INSTRUMENT = "1714"
+        TL_ROUTE_INFO = "791554"
+        token = None
+        token_time = 0
+        
         while self._running:
             try:
-                # Only fetch if websocket hasn't updated in 20s
-                if time.time() - self.last_update > 20:
-                    r = _req.get("https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1m&range=1d",
-                                 headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+                # Refresh token every 5 min
+                if not token or time.time() - token_time > 300:
+                    r = _req.post(f"{TL_URL}/auth/jwt/token",
+                                  json={"email": TL_EMAIL, "password": TL_PASS, "server": TL_SERVER},
+                                  timeout=10)
+                    if r.status_code in (200, 201):
+                        token = r.json()["accessToken"]
+                        token_time = time.time()
+                
+                if token:
+                    r = _req.get(f"{TL_URL}/trade/quotes",
+                                 headers={"Authorization": f"Bearer {token}", "accNum": TL_ACC_NUM},
+                                 params={"routeId": TL_ROUTE_INFO, "tradableInstrumentId": TL_INSTRUMENT},
+                                 timeout=8)
                     if r.status_code == 200:
-                        p = r.json()["chart"]["result"][0]["meta"]["regularMarketPrice"]
-                        if p and p > 0:
-                            self.price = p
+                        d = r.json().get("d", {})
+                        ask = d.get("ap", 0)
+                        bid = d.get("bp", 0)
+                        if ask > 0 and bid > 0:
+                            self.price = (ask + bid) / 2  # mid price
                             self.last_update = time.time()
-            except:
-                pass
+            except Exception as e:
+                print(f"TradeLocker price error: {e}")
             time.sleep(10)
 
     def _ws_loop(self):
