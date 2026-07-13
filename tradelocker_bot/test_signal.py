@@ -100,8 +100,11 @@ async def main():
     )
 
     print("4) Sending TEST signal to Telegram...")
-    await send_telegram(msg)
-    print("   Sent. Check your Telegram.\n")
+    ok = await send_telegram(msg)
+    if ok:
+        print("   DELIVERED. Check your Telegram.\n")
+    else:
+        print("   FAILED to deliver — see error above.\n")
     print("----- MESSAGE PREVIEW -----")
     print(msg)
 

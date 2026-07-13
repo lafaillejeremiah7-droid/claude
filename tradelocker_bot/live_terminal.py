@@ -33,17 +33,26 @@ TELEGRAM_BOT_TOKEN = "8926622863:AAF0QHHYAyEVQZiYV35b5vyeKxDC_ouMnmQ"
 TELEGRAM_CHAT_ID = "7040023207"
 TELEGRAM_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
-async def send_telegram(text: str):
-    """Send a message to the trader via Telegram."""
+async def send_telegram(text: str) -> bool:
+    """Send a message to the trader via Telegram. Returns True on success.
+
+    NOTE: no parse_mode is set. Telegram only accepts 'Markdown', 'MarkdownV2'
+    or 'HTML' — the old 'Monospace' value caused every send to fail with a
+    400 error that was silently swallowed. Plain text is the safest choice.
+    """
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(TELEGRAM_URL, json={
+            resp = await client.post(TELEGRAM_URL, json={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": text,
-                "parse_mode": "Monospace",
             })
+            if resp.status_code != 200:
+                print(f"Telegram send FAILED: {resp.status_code} {resp.text[:200]}")
+                return False
+            return True
     except Exception as e:
         print(f"Telegram send error: {e}")
+        return False
 
 # ---------------------------------------------------------------------------
 # Live price feed (TradingView websocket — real-time, no API key, no broker)
