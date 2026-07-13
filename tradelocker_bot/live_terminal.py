@@ -16,6 +16,7 @@ import asyncio
 import json
 import time
 import threading
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone, date
 from pathlib import Path
 from typing import Optional
@@ -774,19 +775,28 @@ class DashboardState:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
-app = FastAPI(title="XAUUSD ASWP Live Terminal")
 feed = LiveFeed()
 state = DashboardState(feed)
 
 FRONTEND_DIR = Path(__file__).parent / "dashboard" / "frontend"
 TERMINAL_HTML = FRONTEND_DIR / "signal_terminal.html"
 
-@app.on_event("startup")
-async def startup():
+_background_tasks = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: launch price feed thread + background scanning loops
     feed.start_websocket()  # TradingView real-time price in background thread
-    asyncio.create_task(price_loop())
-    asyncio.create_task(yield_loop())
-    asyncio.create_task(market_status_loop())
+    _background_tasks.append(asyncio.create_task(price_loop()))
+    _background_tasks.append(asyncio.create_task(yield_loop()))
+    _background_tasks.append(asyncio.create_task(market_status_loop()))
+    yield
+    # Shutdown: stop feed thread and cancel background tasks cleanly
+    feed._running = False
+    for t in _background_tasks:
+        t.cancel()
+
+app = FastAPI(title="XAUUSD ASWP Live Terminal", lifespan=lifespan)
 
 async def market_status_loop():
     """Send Telegram when XAUUSD market opens/closes."""
