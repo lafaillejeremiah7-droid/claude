@@ -472,7 +472,7 @@ class DashboardState:
         self._open_trades = []  # tracks signals sent, monitors for TP/SL hits
         # Signal cooldown: minimum seconds between signals
         self.SIGNAL_COOLDOWN = 3600  # 60 minutes between signals (was 180s/3min — too fast for 1m entry)
-        self.MAX_SIGNALS_DAY = 4
+        self.MAX_SIGNALS_DAY = 3
         self.MIN_EV = 0.55
 
         # --- ADAPTIVE SL/TP (validated via 100,000-trial random search on
@@ -654,6 +654,22 @@ class DashboardState:
             range_size = range_hi - range_lo
             if range_size < 1.5 * atr_15m:
                 return  # ranging — sit out, the win isn't there
+
+        # TREND EXHAUSTION: skip if the 1H trend has already run > 3× ATR(1H)
+        # from its recent swing. An exhausted trend has low remaining fuel —
+        # entering at the tail-end produces stop-outs (proved today: gold had
+        # dropped $130 = 8× ATR and the bot sold at the floor).
+        if len(bars_1h) >= 20:
+            atr_1h_val = compute_atr(bars_1h)
+            if atr_1h_val > 0:
+                if direction == "sell":
+                    recent_hi = max(b[2] for b in bars_1h[-20:])
+                    exhaustion = (recent_hi - closes_1h[-1]) / atr_1h_val
+                else:
+                    recent_lo = min(b[3] for b in bars_1h[-20:])
+                    exhaustion = (closes_1h[-1] - recent_lo) / atr_1h_val
+                if exhaustion >= 3.0:
+                    return  # trend exhausted — no fuel left, sit out
 
         # 1m entry confirmation trigger (precise entry timing)
         e20_1m = compute_ema(closes_1m, 20)
