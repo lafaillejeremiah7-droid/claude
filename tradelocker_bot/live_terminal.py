@@ -755,6 +755,8 @@ class DashboardState:
             "expected_value_r": round(ev, 2),
             "full_win": round(full_win, 2),
             "atr": round(atr_val, 2),
+            "alloc_a1": round(a1, 2),
+            "alloc_a2": round(a2, 2),
         }
 
         self.signals_today += 1
