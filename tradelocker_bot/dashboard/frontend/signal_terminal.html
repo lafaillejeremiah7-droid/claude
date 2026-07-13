@@ -603,31 +603,31 @@ function checkForPopups(d) {
         'FULL TARGET HIT',
         text,
         'All 3 take-profit levels captured. Signal closed.',
-        7000);
+        2000);
     } else if (label.includes('TP1')) {
       showPopup('tp1',
         'TP1 REACHED',
         text + ' | 10% closed',
         'SL moved to breakeven. Riding remaining 90%.',
-        5000);
+        2000);
     } else if (label.includes('TP2')) {
       showPopup('tp2',
         'TP2 REACHED',
         text + ' | 20% closed',
         'SL moved to TP1. Riding remaining 70%.',
-        5000);
+        2000);
     } else if (label.includes('BREAKEVEN') || label.includes('BE')) {
       showPopup('be',
         'BREAKEVEN',
         text,
         'TP1 was banked. Rest closed at entry.',
-        4000);
+        2000);
     } else if (label.includes('SL HIT') || label.includes('LOSS')) {
       showPopup('sl',
         'STOP LOSS HIT',
         text,
         'Signal closed at stop loss.',
-        4000);
+        2000);
     }
   }
 }
