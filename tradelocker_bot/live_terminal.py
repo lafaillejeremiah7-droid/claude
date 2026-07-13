@@ -471,7 +471,7 @@ class DashboardState:
         self._today = None
         self._open_trades = []  # tracks signals sent, monitors for TP/SL hits
         # Signal cooldown: minimum seconds between signals
-        self.SIGNAL_COOLDOWN = 180  # 3 minutes between signals
+        self.SIGNAL_COOLDOWN = 3600  # 60 minutes between signals (was 180s/3min — too fast for 1m entry)
         self.MAX_SIGNALS_DAY = 4
         self.MIN_EV = 0.55
 
@@ -579,6 +579,10 @@ class DashboardState:
             return
         if time.time() - self.last_signal_time < self.SIGNAL_COOLDOWN:
             return
+        # MAX 1 OPEN POSITION: never stack the same thesis. If a signal is
+        # already open and being tracked, wait until it resolves (TP or SL).
+        if self._open_trades:
+            return
         if now.hour in (21, 22):  # thin liquidity
             return
         if now.weekday() == 4 and now.hour >= 19:  # friday evening
@@ -639,6 +643,17 @@ class DashboardState:
         dist_15m = abs(closes_15m[-1] - e20_15m[-1]) / atr_15m
         if dist_15m > 1.5:
             return
+
+        # RANGE DETECTION: skip if the last 10 fifteen-minute bars are chopping
+        # sideways (high-low range < 1.5× ATR). A real pullback within a trend
+        # shows directional displacement; a range just oscillates around the EMA.
+        if len(bars_15m) >= 10:
+            recent_10 = bars_15m[-10:]
+            range_hi = max(b[2] for b in recent_10)
+            range_lo = min(b[3] for b in recent_10)
+            range_size = range_hi - range_lo
+            if range_size < 1.5 * atr_15m:
+                return  # ranging — sit out, the win isn't there
 
         # 1m entry confirmation trigger (precise entry timing)
         e20_1m = compute_ema(closes_1m, 20)
