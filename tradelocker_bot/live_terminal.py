@@ -9,7 +9,7 @@ Run:
     cd tradelocker_bot
     python3 live_terminal.py
 
-Then open: http://localhost:8080
+Then open: http://localhost:5000
 Signals auto-sent to Telegram when they fire.
 """
 import asyncio
@@ -791,5 +791,5 @@ async def stream(request: Request):
 
 if __name__ == "__main__":
     print("Starting XAUUSD ASWP Live Terminal...")
-    print("Open http://localhost:8080/terminal")
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    print("Open http://localhost:5000/terminal")
+    uvicorn.run(app, host="0.0.0.0", port=5000)
