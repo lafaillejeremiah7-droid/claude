@@ -35,15 +35,42 @@ body{background:#0a0a0a;color:#fff;font-family:"JetBrains Mono","SF Mono","Fira 
 
 /* MAIN AREA */
 .main{display:flex;flex:1;min-height:0;overflow:hidden}
-.chart-area{flex:7;display:flex;flex-direction:column;min-width:0;border-right:1px solid #1a1a1a}
-.chart-header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;flex-shrink:0}
+
+/* LEFT SIDE: Charts stacked */
+.charts-col{flex:1;display:flex;flex-direction:column;min-width:0;border-right:1px solid #1a1a1a}
+.chart-panel{flex:1;display:flex;flex-direction:column;min-height:0}
+.chart-panel+.chart-panel{border-top:1px solid #1a1a1a}
+.chart-header{display:flex;align-items:center;justify-content:space-between;padding:6px 16px;flex-shrink:0}
 .chart-header .chart-title{font-size:10px;letter-spacing:1.5px;color:#666;font-weight:600}
 .chart-header .chart-tf{font-size:9px;color:#444}
-.chart-container{flex:1;position:relative;min-height:0;padding:0 8px 8px 8px}
-#equity-canvas{width:100%;height:100%;display:block}
+.chart-container{flex:1;position:relative;min-height:0;padding:0 8px 4px 8px}
+.chart-container canvas{width:100%;height:100%;display:block}
+
+/* RIGHT SIDE: Signal card + Log */
+.right-col{flex:0 0 320px;display:flex;flex-direction:column;min-width:0;overflow:hidden}
+
+/* ACTIVE SIGNAL PANEL */
+.signal-panel{flex-shrink:0;padding:10px 12px;border-bottom:1px solid #1a1a1a}
+.signal-panel .panel-title{font-size:9px;letter-spacing:1.5px;color:#666;font-weight:600;margin-bottom:8px}
+.signal-card{background:#111;border:1px solid #222;border-radius:4px;padding:10px 12px}
+.signal-card.buy{border-color:#00ff88;background:#001a0a}
+.signal-card.sell{border-color:#ff4444;background:#1a0505}
+.signal-card .sig-dir{font-size:16px;font-weight:700;letter-spacing:1px;margin-bottom:8px}
+.signal-card .sig-dir.buy{color:#00ff88}
+.signal-card .sig-dir.sell{color:#ff4444}
+.signal-card .sig-levels{display:grid;grid-template-columns:auto 1fr;gap:3px 12px;font-size:10px}
+.signal-card .sig-levels .lbl{color:#666;text-transform:uppercase;font-size:9px;letter-spacing:0.5px}
+.signal-card .sig-levels .val{color:#fff;font-weight:600}
+.signal-card .sig-levels .val.green{color:#00ff88}
+.signal-card .sig-levels .val.red{color:#ff4444}
+.signal-card .sig-levels .val.cyan{color:#00ccff}
+.signal-card .sig-levels .val.amber{color:#ffaa00}
+.signal-card .sig-meta{margin-top:8px;display:flex;gap:12px;font-size:9px;color:#888;border-top:1px solid #222;padding-top:6px}
+.signal-card .sig-meta b{color:#ccc}
+.signal-scanning{color:#444;font-size:10px;text-align:center;padding:16px 0}
 
 /* EXECUTION LOG */
-.log-area{flex:3;display:flex;flex-direction:column;min-width:0}
+.log-area{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
 .log-header{padding:8px 12px;flex-shrink:0}
 .log-header .log-title{font-size:10px;letter-spacing:1.5px;color:#666;font-weight:600}
 .log-feed{flex:1;overflow-y:auto;padding:4px 12px;font-size:10px;line-height:1.6}
@@ -157,24 +184,48 @@ body{background:#0a0a0a;color:#fff;font-family:"JetBrains Mono","SF Mono","Fira 
 
 <!-- MAIN AREA -->
 <div class="main">
-  <!-- LEFT: EQUITY CURVE CHART -->
-  <div class="chart-area">
-    <div class="chart-header">
-      <span class="chart-title">EQUITY CURVE // XAUUSD ASWP</span>
-      <span class="chart-tf" id="chart-tf">LIVE / ALL</span>
+  <!-- LEFT: Two charts stacked (Price chart + Equity curve) -->
+  <div class="charts-col">
+    <!-- PRICE CHART -->
+    <div class="chart-panel">
+      <div class="chart-header">
+        <span class="chart-title">XAUUSD PRICE // 5m</span>
+        <span class="chart-tf" id="price-last">--</span>
+      </div>
+      <div class="chart-container">
+        <canvas id="price-canvas"></canvas>
+      </div>
     </div>
-    <div class="chart-container">
-      <canvas id="equity-canvas"></canvas>
+    <!-- EQUITY CURVE -->
+    <div class="chart-panel">
+      <div class="chart-header">
+        <span class="chart-title">EQUITY CURVE // SIGNAL P&L</span>
+        <span class="chart-tf" id="chart-tf">LIVE / ALL</span>
+      </div>
+      <div class="chart-container">
+        <canvas id="equity-canvas"></canvas>
+      </div>
     </div>
   </div>
 
-  <!-- RIGHT: EXECUTION LOG -->
-  <div class="log-area">
-    <div class="log-header">
-      <span class="log-title">EXECUTION LOG</span>
+  <!-- RIGHT: Active Signal + Execution Log -->
+  <div class="right-col">
+    <!-- ACTIVE SIGNAL PANEL -->
+    <div class="signal-panel">
+      <div class="panel-title">ACTIVE SIGNAL</div>
+      <div id="signal-card-container">
+        <div class="signal-scanning">SCANNING... NO ACTIVE SIGNAL</div>
+      </div>
     </div>
-    <div class="log-feed" id="log-feed">
-      <div class="log-entry"><span class="info">Waiting for signal engine...</span></div>
+
+    <!-- EXECUTION LOG -->
+    <div class="log-area">
+      <div class="log-header">
+        <span class="log-title">EXECUTION LOG</span>
+      </div>
+      <div class="log-feed" id="log-feed">
+        <div class="log-entry"><span class="info">Waiting for signal engine...</span></div>
+      </div>
     </div>
   </div>
 </div>
@@ -287,6 +338,155 @@ function drawEquityCurve() {
   ctx.font = 'bold 11px monospace';
   ctx.textAlign = 'left';
   ctx.fillText('$' + pts[pts.length - 1].toFixed(2), lastX - 70, lastY - 10);
+}
+
+// ===== PRICE CHART (XAUUSD 5m) =====
+let pricePoints = [];
+const MAX_PRICE_POINTS = 200;
+
+function drawPriceChart() {
+  const canvas = document.getElementById('price-canvas');
+  if (!canvas) return;
+  const container = canvas.parentElement;
+  const rect = container.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const w = rect.width;
+  const h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  if (pricePoints.length < 2) {
+    ctx.fillStyle = '#333';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Collecting price data...', w / 2, h / 2);
+    return;
+  }
+
+  const pts = pricePoints;
+  const minV = Math.min(...pts) - 1;
+  const maxV = Math.max(...pts) + 1;
+  const range = maxV - minV || 1;
+  const padL = 60;
+  const padR = 16;
+  const padT = 12;
+  const padB = 12;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  // Grid lines
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 0.5;
+  ctx.font = '9px monospace';
+  ctx.fillStyle = '#444';
+  ctx.textAlign = 'right';
+  const gridLines = 4;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = padT + (plotH * i / gridLines);
+    const val = maxV - (range * i / gridLines);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(w - padR, y);
+    ctx.stroke();
+    ctx.fillText('$' + val.toFixed(2), padL - 6, y + 3);
+  }
+
+  // Draw active signal levels if available
+  if (window._activeSignal) {
+    const s = window._activeSignal;
+    const levels = [
+      { price: s.entry, color: '#ffffff', label: 'ENTRY' },
+      { price: s.sl, color: '#ff4444', label: 'SL' },
+      { price: s.tp1, color: '#00ccff', label: 'TP1' },
+      { price: s.tp2, color: '#ffaa00', label: 'TP2' },
+      { price: s.tp_final, color: '#00ff88', label: 'FINAL' },
+    ];
+    for (const lv of levels) {
+      if (lv.price >= minV && lv.price <= maxV) {
+        const y = padT + ((maxV - lv.price) / range) * plotH;
+        ctx.strokeStyle = lv.color;
+        ctx.lineWidth = 0.8;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.moveTo(padL, y);
+        ctx.lineTo(w - padR, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = lv.color;
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(lv.label + ' ' + lv.price.toFixed(2), padL + 4, y - 3);
+      }
+    }
+  }
+
+  // Price line
+  ctx.beginPath();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.5;
+  for (let i = 0; i < pts.length; i++) {
+    const x = padL + (i / (pts.length - 1)) * plotW;
+    const y = padT + ((maxV - pts[i]) / range) * plotH;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Fill under price
+  const lastX = padL + ((pts.length - 1) / (pts.length - 1)) * plotW;
+  const lastY = padT + ((maxV - pts[pts.length - 1]) / range) * plotH;
+  ctx.lineTo(lastX, padT + plotH);
+  ctx.lineTo(padL, padT + plotH);
+  ctx.closePath();
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+  grad.addColorStop(0, 'rgba(255,255,255,0.04)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Dot + label at current price
+  ctx.beginPath();
+  ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
+  ctx.fillStyle = '#fff';
+  ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 10px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText('$' + pts[pts.length - 1].toFixed(2), lastX - 8, lastY - 6);
+}
+
+// ===== ACTIVE SIGNAL CARD =====
+function renderSignalCard(d) {
+  const container = document.getElementById('signal-card-container');
+  if (!d.active_signal) {
+    window._activeSignal = null;
+    container.innerHTML = '<div class="signal-scanning">SCANNING... NO ACTIVE SIGNAL</div>';
+    return;
+  }
+  const s = d.active_signal;
+  window._activeSignal = s;
+  const dir = s.direction || 'buy';
+  const dirClass = dir === 'sell' ? 'sell' : 'buy';
+  container.innerHTML = '<div class="signal-card ' + dirClass + '">'
+    + '<div class="sig-dir ' + dirClass + '">' + dir.toUpperCase() + ' XAUUSD | ' + s.lot_size + ' lots</div>'
+    + '<div class="sig-levels">'
+    + '<span class="lbl">Entry</span><span class="val">' + s.entry.toFixed(2) + '</span>'
+    + '<span class="lbl">SL</span><span class="val red">' + s.sl.toFixed(2) + '</span>'
+    + '<span class="lbl">TP1</span><span class="val cyan">' + s.tp1.toFixed(2) + ' (10%, SL->BE)</span>'
+    + '<span class="lbl">TP2</span><span class="val amber">' + s.tp2.toFixed(2) + ' (20%, SL->TP1)</span>'
+    + '<span class="lbl">Final</span><span class="val green">' + s.tp_final.toFixed(2) + ' (70%)</span>'
+    + '</div>'
+    + '<div class="sig-meta">'
+    + '<span>EV: <b>' + (s.expected_value_r || 0).toFixed(2) + 'R</b></span>'
+    + '<span>P(TP1): <b>' + ((s.probability || 0) * 100).toFixed(0) + '%</b></span>'
+    + '<span>Risk: <b>-$' + (s.risk_dollars || 0).toFixed(2) + '</b></span>'
+    + '<span>Win: <b>+$' + (s.full_win || 0).toFixed(2) + '</b></span>'
+    + '</div>'
+    + '</div>';
 }
 
 // ===== LOG MANAGEMENT =====
@@ -411,6 +611,11 @@ function updateDashboard(d) {
   // TICKER BAR
   if (d.current_price !== undefined) {
     document.getElementById('tk-price').textContent = '$' + d.current_price.toFixed(2);
+    document.getElementById('price-last').textContent = '$' + d.current_price.toFixed(2);
+    // Add to price chart
+    pricePoints.push(d.current_price);
+    if (pricePoints.length > MAX_PRICE_POINTS) pricePoints.shift();
+    drawPriceChart();
   }
   if (d.current_ev !== undefined) {
     const edgeEl = document.getElementById('tk-edge');
@@ -502,7 +707,8 @@ function updateDashboard(d) {
     }
   }
 
-  // Active signal in log
+  // Active signal card + log
+  renderSignalCard(d);
   if (d.active_signal) {
     const s = d.active_signal;
     const dir = s.direction ? s.direction.toUpperCase() : 'BUY';
@@ -512,8 +718,9 @@ function updateDashboard(d) {
     const sigText = 'SIGNAL FIRED +' + ev + 'R // ' + dir + ' @ $' + entry;
     if (!logEntries.find(e => e.text === sigText)) {
       addLogEntry('signal', sigText);
+      addLogEntry('cyan', 'SL: $' + s.sl.toFixed(2) + ' | TP1: $' + s.tp1.toFixed(2) + ' | TP2: $' + s.tp2.toFixed(2) + ' | FINAL: $' + s.tp_final.toFixed(2));
       if (s.atr) {
-        addLogEntry('cyan', '+' + s.atr.toFixed(2) + ' ATR divergence | EMA20 cross | RSI alignment');
+        addLogEntry('info', 'ATR: $' + s.atr.toFixed(2) + ' | Lots: ' + s.lot_size + ' | Risk: -$' + (s.risk_dollars || 0).toFixed(2) + ' | Est Win: +$' + (s.full_win || 0).toFixed(2));
       }
     }
   }
@@ -636,10 +843,10 @@ function checkForPopups(d) {
 loadSnapshot();
 connectStream();
 setInterval(loadSnapshot, 10000);
-window.addEventListener('resize', () => drawEquityCurve());
+window.addEventListener('resize', () => { drawEquityCurve(); drawPriceChart(); });
 
 // Initial draw
-setTimeout(() => drawEquityCurve(), 100);
+setTimeout(() => { drawEquityCurve(); drawPriceChart(); }, 100);
 </script>
 </body>
 </html>
