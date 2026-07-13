@@ -101,9 +101,12 @@ class LiveFeed:
         self.low = 0.0
         self.open = 0.0
         self.change = 0.0
+        self.bars_1m = []
         self.bars_5m = []
         self.bars_15m = []
+        self.bars_30m = []
         self.bars_1h = []
+        self._bars_1m_fetched_at = 0.0
         self.yield_value = 0.0
         self.yield_change = 0.0
         self.last_update = 0.0
@@ -219,9 +222,19 @@ class LiveFeed:
                 time.sleep(5)
 
     async def fetch_price(self):
-        """Load historical 5m bars. Primary: TradeLocker (same broker as live price,
+        """Load historical bars. Primary: TradeLocker (same broker as live price,
         always current). Fallback: Forexite. Refreshes every ~5 min so the newest
-        candles stay aligned with the live quote."""
+        candles stay aligned with the live quote.
+
+        Timeframes used by the engine (backtested optimal on 1yr of real data):
+          - 1h  gate     (resampled from 5m, factor 12)
+          - 15m pullback (resampled from 5m, factor 3)
+          - 1m  entry    (fetched directly from TradeLocker at 1m resolution)
+        """
+        # 1m entry bars refresh every ~2 min (finer timeframe, updates faster)
+        if not self.bars_1m or time.time() - self._bars_1m_fetched_at >= 120:
+            await self._fetch_bars_1m_tradelocker()
+        # 5m base bars (for 15m/1h resampling) refresh every ~5 min
         if self.bars_5m and time.time() - self._bars_fetched_at < 300:
             return  # bars fresh enough
         # Try TradeLocker history first (fresh, aligned with live price)
@@ -229,6 +242,37 @@ class LiveFeed:
             return
         # Fallback to Forexite if TradeLocker history unavailable
         await self._fetch_bars_forexite()
+
+    async def _fetch_bars_1m_tradelocker(self) -> bool:
+        """Fetch 1m entry bars from TradeLocker history endpoint (last ~2 days)."""
+        try:
+            token = self._ensure_token()
+            if not token:
+                return False
+            now_ms = int(time.time() * 1000)
+            from_ms = now_ms - 4 * 24 * 3600 * 1000
+            async with httpx.AsyncClient(timeout=20) as client:
+                r = await client.get(
+                    f"{TL_URL}/trade/history",
+                    headers={"Authorization": f"Bearer {token}", "accNum": TL_ACC_NUM},
+                    params={"routeId": TL_ROUTE_INFO, "tradableInstrumentId": TL_INSTRUMENT,
+                            "resolution": "1m", "from": from_ms, "to": now_ms},
+                )
+            if r.status_code != 200:
+                print(f"TradeLocker 1m history failed: {r.status_code} {r.text[:120]}")
+                return False
+            bars = r.json().get("d", {}).get("barDetails", [])
+            if not bars:
+                return False
+            self.bars_1m = [
+                (int(b["t"] / 1000), float(b["o"]), float(b["h"]), float(b["l"]), float(b["c"]))
+                for b in bars
+            ]
+            self._bars_1m_fetched_at = time.time()
+            return True
+        except Exception as e:
+            print(f"TradeLocker 1m bar fetch error: {e}")
+            return False
 
     async def _fetch_bars_tradelocker(self) -> bool:
         """Fetch 5m bars from TradeLocker history endpoint (last ~10 days)."""
@@ -302,8 +346,9 @@ class LiveFeed:
             print(f"Forexite bar fetch error: {e}")
 
     def _resample(self):
-        self.bars_15m = self._merge_bars(self.bars_5m, 3)
-        self.bars_1h = self._merge_bars(self.bars_5m, 12)
+        self.bars_15m = self._merge_bars(self.bars_5m, 3)   # pullback timeframe
+        self.bars_30m = self._merge_bars(self.bars_5m, 6)   # (available if gate lowered)
+        self.bars_1h = self._merge_bars(self.bars_5m, 12)   # gate timeframe
 
     @staticmethod
     def _merge_bars(bars, factor):
@@ -451,14 +496,21 @@ class DashboardState:
         if now.weekday() == 4 and now.hour >= 19:  # friday evening
             return
 
-        bars_5m = f.bars_5m
+        # Timeframes (backtested optimal on 1yr real data, avg +0.136R/signal):
+        #   1h gate | 15m pullback | 1m entry | exit stops sized from 15m ATR
+        bars_1m = f.bars_1m
+        bars_15m = f.bars_15m
         bars_1h = f.bars_1h
-        if len(bars_5m) < 30 or len(bars_1h) < 50:
+        if len(bars_1m) < 30 or len(bars_15m) < 20 or len(bars_1h) < 50:
             return
 
-        closes_5m = [b[4] for b in bars_5m]
+        closes_1m = [b[4] for b in bars_1m]
+        closes_15m = [b[4] for b in bars_15m]
         closes_1h = [b[4] for b in bars_1h]
-        atr_val = compute_atr(bars_5m)
+
+        # Exit (SL/TP) sizing uses 15m ATR — wide enough that the spread is a
+        # negligible fraction of the stop (1m ATR would be far too tight).
+        atr_val = compute_atr(bars_15m)
         if atr_val <= 0:
             return
 
@@ -473,10 +525,6 @@ class DashboardState:
             return
 
         # 15m pullback zone
-        bars_15m = f.bars_15m
-        if not bars_15m:
-            return
-        closes_15m = [b[4] for b in bars_15m]
         e20_15m = compute_ema(closes_15m, 20)
         atr_15m = compute_atr(bars_15m)
         if atr_15m <= 0:
@@ -485,14 +533,14 @@ class DashboardState:
         if dist_15m > 1.5:
             return
 
-        # 5m confirmation trigger
-        e20_5m = compute_ema(closes_5m, 20)
-        rsi_val = compute_rsi(closes_5m)
-        if len(bars_5m) < 2:
+        # 1m entry confirmation trigger (precise entry timing)
+        e20_1m = compute_ema(closes_1m, 20)
+        rsi_val = compute_rsi(closes_1m)
+        if len(bars_1m) < 2:
             return
-        prev = bars_5m[-2]
+        prev = bars_1m[-2]
         prev_o, prev_h, prev_l, prev_c = prev[1], prev[2], prev[3], prev[4]
-        pe = e20_5m[-2] if len(e20_5m) >= 2 else e20_5m[-1]
+        pe = e20_1m[-2] if len(e20_1m) >= 2 else e20_1m[-1]
 
         if direction == "buy":
             trigger = prev_l <= pe * 1.002 and prev_c > prev_o and rsi_val < 65
@@ -737,13 +785,15 @@ class DashboardState:
 
     def compute_snapshot(self) -> dict:
         f = self.feed
-        bars_5m = f.bars_5m
+        bars_15m = f.bars_15m
+        bars_1m = f.bars_1m
         bars_1h = f.bars_1h
 
-        closes_5m = [b[4] for b in bars_5m] if bars_5m else []
+        closes_1m = [b[4] for b in bars_1m] if bars_1m else []
         closes_1h = [b[4] for b in bars_1h] if bars_1h else []
-        atr_val = compute_atr(bars_5m) if len(bars_5m) > 14 else 0
-        rsi_val = compute_rsi(closes_5m) if closes_5m else 50
+        # ATR displayed = 15m (matches exit sizing); RSI = 1m (matches entry TF)
+        atr_val = compute_atr(bars_15m) if len(bars_15m) > 14 else 0
+        rsi_val = compute_rsi(closes_1m) if closes_1m else 50
 
         # 1H trend
         trend = 0

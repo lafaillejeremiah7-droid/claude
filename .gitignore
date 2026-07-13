@@ -9,3 +9,7 @@ build/
 venv/
 *.log
 signal_pnl.json
+
+# Large historical data files (backtest inputs, not versioned)
+*.parquet
+tradelocker_bot/data/
