@@ -962,6 +962,18 @@ async def stream(request: Request):
 
 
 if __name__ == "__main__":
+    import signal as _signal
+    import os as _os
+
+    def _force_exit(*_):
+        """Ctrl+C = instant kill. No graceful shutdown delay."""
+        print("\n Bot stopped.")
+        _os._exit(0)
+
+    _signal.signal(_signal.SIGINT, _force_exit)
+    _signal.signal(_signal.SIGTERM, _force_exit)
+
     print("Starting XAUUSD ASWP Live Terminal...")
     print("Open http://localhost:5000/terminal")
+    print("Press Ctrl+C to stop instantly.")
     uvicorn.run(app, host="0.0.0.0", port=5000)
