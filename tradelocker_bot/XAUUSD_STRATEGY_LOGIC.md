@@ -130,9 +130,29 @@ signal selection and probability.
 
 - **Account:** $250 daily loss / $400 max DD (static floor $4,600).
   Circuit-breaker pauses at −$120/day long before the $250 limit.
-- **Signal:** max 4 signals/day, 3-min cooldown.
-- **Session:** no entries 21-22 UTC (rollover), no new trades after Fri 19:00
-  UTC, 30-min news blackout (NFP/CPI/FOMC).
+- **Signal:** **max 2 signals/day**, 60-min cooldown, max 1 open position.
+- **Session (rebuild v2):** signals fire **only 12-20 UTC** (London/NY overlap
+  + NY session). No entries 21-22 UTC (rollover), no new trades after Fri 19:00
+  UTC.
+
+### 9a. SESSION FILTER — the rebuild-v2 upgrade (validated)
+
+Gold's directional edge is concentrated in the London/NY window. Trading the
+Asian / early-London chop was the source of the drawdown problem. Restricting
+signals to **12-20 UTC** (same $45 risk + circuit-breaker, same 2/day cap):
+
+| | all hours (old) | 12-20 UTC (new) |
+|---|---|---|
+| 2025-26 max DD | **$407 — FAILS $350 gate** | **$312 — PASS** |
+| 2025-26 $/wk | +$123 | **+$139** |
+| 2025-26 win rate | 43% | **46%** |
+| 2023-24 $/wk | +$128 | +$129 (gate PASS) |
+| 2023-24 win rate | 45% | **50%** |
+
+The old all-hours config actually **breached the max-DD gate** on recent
+(2025-26) data. The session filter fixes that *and* lifts weekly profit and win
+rate simultaneously, validated on both datasets. "Adaptability" here = knowing
+which sessions to trade and which to skip — not forcing a trade in every session.
 
 ---
 

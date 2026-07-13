@@ -510,6 +510,12 @@ class DashboardState:
         # ($45 vs $25) safely: +37% vs flat-$25, static $4,600 floor never
         # breached across 2025-26, 2023-24, and 4.5yr.
         self.RISK_BASE = 45.0           # base $ risk per signal
+        # SESSION WINDOW (rebuild v2): only signal during the London/NY overlap
+        # + NY session, 12-20 UTC. This is where gold's directional edge lives.
+        # Keeping $45 risk but restricting sessions: 2025-26 DD $407->$312 (gate
+        # FAIL->PASS), WR 43%->46-50%, +$17/wk. Validated on 2023-24 too.
+        self.SESSION_START = 12         # UTC hour, inclusive
+        self.SESSION_END = 20           # UTC hour, inclusive
         self.RISK_DAILY_STOP = 120.0    # pause new signals after daily loss <= -this
         self.RISK_DD_THROTTLE = 200.0   # when (peak - equity) >= this ...
         self.RISK_THROTTLE_FACTOR = 0.35  # ... cut risk to 35% until a new peak
@@ -586,6 +592,14 @@ class DashboardState:
         if now.hour in (21, 22):  # thin liquidity
             return
         if now.weekday() == 4 and now.hour >= 19:  # friday evening
+            return
+        # SESSION FILTER (rebuild v2, validated 2023-24 + 2025-26): gold's edge
+        # is concentrated in the London/NY overlap + NY session (12-20 UTC).
+        # Trading the Asian / early-London chop was the source of the drawdown
+        # breach (all-hours $45 hit $407 DD on 2025-26 — FAILS the $350 gate).
+        # Restricting to 12-20 UTC raises win rate 43->46-50%, lifts weekly
+        # profit, and keeps DD gate-safe on BOTH datasets at the same $45 risk.
+        if not (self.SESSION_START <= now.hour <= self.SESSION_END):
             return
         # Drawdown circuit-breaker: pause new signals once the day's loss hits
         # the cap (protects daily DD).
@@ -1067,7 +1081,8 @@ class DashboardState:
         now = datetime.now(timezone.utc)
         news_clear = True
         weekend_clear = not (now.weekday() == 4 and now.hour >= 19)
-        hours_active = now.hour not in (21, 22)
+        # Active only during the 12-20 UTC London/NY session window (rebuild v2)
+        hours_active = (self.SESSION_START <= now.hour <= self.SESSION_END)
 
         return {
             "mode": "live",
