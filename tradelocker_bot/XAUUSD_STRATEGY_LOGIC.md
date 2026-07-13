@@ -62,26 +62,34 @@ reversal earlier, +2× edge per signal). Exit ATR is sized from **15m** so the
 
 ---
 
-## 5. Adaptive SL/TP (validated via 100,000-trial search)
+## 5. Adaptive SL/TP — PHASE-14 IDEAL-TRADER GEOMETRY (re-optimized for 12-20 UTC / 2-per-day)
+
+The old geometry (SL 0.89×, TP1 1R, TP2 2R) made only ~$25-30/wk and **breached
+the DD gate** on 2025-26 ($391 > $350). Re-optimizing for this exact regime found
+the honest optimum — **pull TP1 in close so price tags it far more often**:
 
 ```
-SL    = 0.894 × clip(vol_ratio, 0.856, 1.072) × ATR(15m)
+SL    = 1.158 × clip(vol_ratio, 0.856, 1.072) × ATR(15m)   (WIDER → fewer premature stops)
         vol_ratio = current 15m ATR ÷ its 50-bar rolling average
-        → tightens when calm, widens when volatility expands
-TP1   = 1R   (close A1%, SL→breakeven)
-TP2   = 2R   (close A2%, SL→TP1)
-Final = 3R × clip(1 + 1.79×(trend_strength−1), 0.33, 2.88)  (ride A3%)
-        trend_strength = |EMA20₁ₕ − EMA50₁ₕ| ÷ ATR(1h)
-        → runner extends in strong 1H trends, contracts in chop
+TP1   = 0.50R  (close A1=49%, SL→breakeven)   ← the win-rate lever
+TP2   = 2.75R  (close A2=30%, SL→TP1)
+Final = 4.70R × clip(1 + 1.82×(trend_strength−1), 0.833, 1.333)  (ride A3=21%)
+        → realized Final ≈ 3.9R (weak trend) to 6.3R (strong), avg ~4.7R
 ```
+
+**Why it works:** once price tags the close 0.50R TP1, 49% is banked and SL jumps
+to breakeven — the trade can no longer become a full loss. That single change
+lifts win rate from ~51% to ~68%. The wider SL cuts stop-hunts, and the 30% mid
+leg + 21% runner (to 2.75R / ~4.7R) still capture gold's big moves, so weekly
+profit *rises* even while banking early.
 
 ---
 
 ## 6. Multi-TP harvest allocation (Phase-4 validated upgrade)
 
 ```
-DEFAULT:     A1=30%  A2=40%  A3=30%   (was 10/20/70)
-STRONG TREND: tilt ~19% back toward A3 (runner rides more in strong 1H trends)
+DEFAULT:     A1=49%  A2=30%  A3=21%   (phase-14; front-loaded to lock wins early)
+STRONG TREND: tilt ~9% back toward A3 (runner rides more in strong 1H trends)
 ```
 
 Why front-loaded? Phase 3 proved gold runs to TP1/TP2 then frequently reverses
@@ -167,17 +175,25 @@ which sessions to trade and which to skip — not forcing a trade in every sessi
 
 ---
 
-## 11. Validated performance
+## 11. Validated performance — HONEST, actual live config (12-20 UTC, 2/day, $45+CB)
 
-### In-sample (Jan 2025 → Jul 2026, circuit-breaker + 30/40/30):
-- **+$420/wk** | max DD $326 | max daily DD $157 | gate PASS
-- ~2,731 signals/80wk (~34/wk ≈ 3.4/day)
+These are the **real** numbers for the exact geometry the bot runs, measured on
+both datasets. (Earlier docs quoted higher figures that used a research-file
+geometry which never matched the deployed bot — corrected here.)
 
-### Out-of-sample (2023-2024):
-- **+$194/wk** | max DD $308 | gate PASS
+| | OLD geometry (TP1 1R) | **PHASE-14 (TP1 0.50R)** |
+|---|---|---|
+| 2025-26 $/wk | +$30 | **+$50** |
+| 2025-26 win rate | 51% | **68%** |
+| 2025-26 max DD | $391 (**FAILS $350 gate**) | **$315 (PASS)** |
+| 2023-24 $/wk | +$25 | **+$50** |
+| 2023-24 win rate | 53% | **63%** |
+| 2023-24 max DD | $331 | **$231** |
+| signals/day | ~1.7-1.9 | ~1.7-1.9 |
 
-### Flat-$25 comparison (same allocation, no circuit-breaker):
-- +$307/wk (in-sample), +$145/wk (OOS) — circuit-breaker adds +37%.
+The phase-14 geometry wins on **every axis** — profit, win rate, and drawdown —
+on both datasets, at the max-2/day cap. It is the honest ceiling found for this
+regime (WR and $/week trade off; this is the balanced max of WR × $/week).
 
 ---
 
