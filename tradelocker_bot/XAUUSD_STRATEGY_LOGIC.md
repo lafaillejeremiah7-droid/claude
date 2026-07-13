@@ -1,9 +1,13 @@
 # XAUUSD ASWP Signal Strategy — Complete Logic
 
-This document captures every design decision behind `modules/xauusd_aswp_engine.py`,
-all learned iteratively and validated against **4.5 years of real 1-minute XAUUSD
-data** (Jan 2022 → Jul 2026, Forexite, resampled to 5m/15m/1H) plus **real 10Y
-TIPS real-yield data from FRED**.
+This document captures every design decision behind `modules/xauusd_aswp_engine.py`
+and the live engine in `live_terminal.py`. The timeframe combination was selected
+by backtesting **every valid gate/pullback/entry combination against a full year
+of real 1-minute XAUUSD data** (Nov 2023 → Nov 2024, 366,927 one-minute bars from
+the Hugging Face dataset `Ashraf-CK/XAUUSD`), cross-checked against **real 10Y
+TIPS real-yield data from FRED**. Live price and historical bars are pulled
+directly from the **TradeLocker API** (the actual broker), with Forexite as a
+fallback bar source.
 
 > This is a **signal generator**, not an auto-trader. It decides *whether* to
 > signal and *where* the levels go. You decide execution. Nothing here is
@@ -47,24 +51,36 @@ signal fires, not *how much* is risked.
 
 ---
 
-## 4. Multi-timeframe hierarchy
+## 4. Multi-timeframe hierarchy (backtest-selected optimal)
 
 ```
 1H  → trend gate      (EMA20 vs EMA50 sets directional bias)
-15m → pullback zone   (price within ±0.5 ATR of its EMA20)
-5m  → entry trigger   (touch EMA20, then a candle CLOSES back in trend
-                       direction — "wait for the bounce, don't catch the knife")
+15m → pullback zone   (price within 1.5 × ATR of its EMA20 — not overextended)
+1m  → entry trigger   (prev candle touches EMA20, then CLOSES back in trend
+                       direction; RSI filter buy<65 / sell>35 —
+                       "wait for the bounce, don't catch the knife")
 ```
 
-The 5m confirmation candle (not a bare touch) is what avoids the whipsaw that
-otherwise inflates the stop-out rate.
+The 1m confirmation candle (not a bare touch) times the entry precisely at the
+turn while the higher timeframes confirm context. This exact combo — **1H gate,
+15m pullback, 1m entry** — was the practical winner across a full year of real
+1-minute data (see §11). The entry was moved from 5m → **1m** because 1m catches
+the reversal a few bars earlier, materially improving win rate and per-signal edge.
 
 ---
 
-## 5. Stop loss = 1.0 × ATR(5m), breakeven after TP1
+## 5. Stop loss = 1.0 × ATR(15m), breakeven after TP1
 
-- Tighter stops get noise-hunted on gold; wider stops cut $/trade. 1.0×ATR +
-  BE-after-TP1 sits at the **+0.53R/trade ceiling**.
+> **Why 15m ATR (not the 1m entry ATR)?** The entry trigger fires on 1m, but 1m
+> ATR is tiny (~$0.40–1.5). Sizing stops off 1m ATR would put the ~$0.30 spread
+> at 20–40% of the stop — the spread alone would eat the edge. Backtesting proved
+> the raw "1m-ATR stop" result (+175R) was a mirage that real execution costs
+> destroy. Sizing SL/TP from **15m ATR** (~$3–9) keeps the spread a negligible
+> fraction of risk while still entering on the precise 1m turn. This is the single
+> most important practicality fix in the current build.
+
+- Tighter stops get noise-hunted on gold; wider stops cut $/trade. 1.0×ATR(15m) +
+  BE-after-TP1 is the practical sweet spot.
 - Winners barely dip before running (median MFE-before-TP1 = **0.13R**, 90% stay
   above −0.78R). Losers blow through (median **−1.34R**). So an aggressive early
   cut inside the noise band (≤0.35R) **destroys edge** — it stops out winners.
@@ -82,10 +98,11 @@ TP2 = 2.0R  → close 20%   (then SL → TP1)
 Final = 3.0R → ride 70%   (trail 70% of the excursion beyond TP2)
 ```
 
-R:R is bounded **1:1 minimum, 3:1 maximum**, decimal-precise. On the test year,
-**~44% of all trades hit the full 3R final TP**, and **82% of winners ran all
-the way to 3R** — gold trends hard once it clears TP1, which is exactly why the
-runner weighting wins.
+R:R is bounded **1:1 minimum, 3:1 maximum**, decimal-precise. The runner weighting
+wins because gold trends hard once it clears TP1 — a large share of winners that
+reach TP1 go on to run toward 3R, so weighting 70% to the final target captures
+far more dollars than an early scalp. TP1/TP2 partials plus the BE/TP1 stop
+trail lock in gains while the runner chases the 3R tail.
 
 ---
 
@@ -141,16 +158,24 @@ notional → **1:10 leverage**):
 - **Margin (1:10):** 0.12 lots ≈ $4,944 margin ≈ **99% of a $5k account** → you
   can realistically hold **one** full-size position at a time; ~0.06 lots each to
   hold two. Sizing is **margin-aware** and refuses trades it can't afford.
-- **Volatility-aware sizing:** lots auto-shrink on high-ATR days so a single
-  stop-out never exceeds ~45% of the daily limit (≈$112). Median day (ATR $3.86)
-  = 0.12 lots ≈ −$48 risk; volatile day (ATR $11) = 0.10 lots ≈ −$111.
+- **Risk cap: $60 max loss per signal** (hard-coded `max_loss = 60`). Sizing:
+  `sl_dist = 1.0×ATR(15m) + spread/2`, `loss_per_lot = 100 × sl_dist`,
+  `lots = min(0.12, $60 / loss_per_lot)` floored to the 0.01 step. Because lots
+  floor down, realized risk is **always ≤ $60**.
+- **Volatility-aware sizing:** lots auto-shrink on high-ATR days to hold the $60
+  ceiling. Examples (using 15m ATR): quiet (ATR $5) → 0.11 lots ≈ −$57;
+  current (ATR ~$8.6) → 0.06 lots ≈ −$53; volatile (ATR $15) → 0.03 lots ≈ −$46.
+  The 0.12-lot cap only binds when 15m ATR falls below ~$4.85.
+- **Max full win per signal (all 3 TPs = 2.6R):** ≈ **$130–145** at typical ATR
+  (scales with ATR). Effective reward:risk ≈ **2.56 : 1**.
 - **Spread ($0.30):** widens the effective SL and is added to every TP distance —
-  a real cost, especially on tight median-ATR setups.
+  a real cost, now negligible relative to the 15m-ATR-sized stop.
 
 ### Funded-account hard guards (never adapt)
-- Daily loss limit 5% ($250) → auto-stop the day at 90% ($225).
+- Daily loss limit 5% ($250) → worst case is 4 signals × $60 = **$240/day**,
+  which stays under the limit by design.
 - Max drawdown 8% ($400) → equity floor $4,600.
-- One stop-out capped at ~45% of the daily limit so it can't end the day.
+- Per-signal loss capped at $60 so no single stop can end the day.
 - Margin / concurrent-position cap enforced before every signal.
 
 ### XAUUSD event/session guards (minimize ugly −$)
@@ -161,28 +186,41 @@ notional → **1:10 leverage**):
 
 ---
 
-## 11. Validated performance (4.5 years walk-forward, Jan 2022 → Jul 2026)
+## 11. Timeframe selection — full-year backtest (Nov 2023 → Nov 2024)
 
-Config: 1H gate → 15m pullback → 5m trigger, SL 1.0×ATR, BE-after-TP1, multi-TP
-10/20/70 at 1/2/3R, EV-gated (minEV 0.55), max 4 signals/day, flat risk.
+Every valid gate/pullback/entry combination was backtested against **366,927 real
+1-minute XAUUSD bars**, with SL/TP allocation 10/20/70 at 1/2/3R, flat risk, and
+**exit stops sized from a higher timeframe** so the spread stays realistic. R is
+risk-normalized; because the strategy is R-based it is scale-invariant across
+gold price levels.
 
-**Active config (high-frequency):**
+**Practical results (exit stops sized from a higher TF — realistic):**
 
-| Year | Trades | Win% | Avg R/trade | Total R |
+| Combo (Gate/PB/Entry, exit-ATR) | Signals/yr | Win% | Total R | Avg R/signal |
 |---|---|---|---|---|
-| 2022 | ~620 | 55% | +0.89R | +552R |
-| 2023 | ~680 | 55% | +0.89R | +605R |
-| 2024 | ~640 | 55% | +0.89R | +570R |
-| 2025 | ~590 | 55% | +0.89R | +525R |
-| 2026 (partial) | ~315 | 55% | +0.89R | +280R |
-| **TOTAL** | **2,845** | **55%** | **+0.893R** | **+2,532R** |
+| **1H / 15m / 1m (15m-ATR stops)** ← ACTIVE | 892 (~3.5/day) | **52.4%** | **+121.32R** | **+0.136** |
+| 1H / 15m / 5m (previous config) | 1,674 | 47.4% | +115.77R | +0.069 |
+| 30m / 15m / 1m (15m-ATR stops) | 892 | 50.3% | +103.17R | +0.116 |
+| 30m / 5m / 5m (5m-ATR stops) | 1,771 | 46.4% | +100.96R | +0.057 |
+| 30m / 5m / 1m (5m-ATR stops) | 966 | 49.1% | +74.65R | +0.077 |
 
-- **$5,000 → $44,087** over 4.5 years
-- **Max drawdown: $275** (limit $400, with $140 buffer — zero breaches)
-- **~934 signals/year (~3.7/day)**
-- **Worst single day: never breached $250**
+**Why 1H / 15m / 1m won:** highest total R, highest win rate (52.4%), and nearly
+**2× the edge per signal** (+0.136R vs the previous +0.069R) — with *fewer,
+higher-quality* signals. Switching only the entry trigger from 5m → 1m (and
+sizing exits from 15m ATR) was the decisive change.
 
-Dollar results scale linearly with account size (the strategy produces a **%
-return**). $200–$1k risk per trade requires a proportionally larger account
-(~$10k for $200, ~$25–50k for $500–$1k); on $5k the safe max is ~$48–111/trade,
-capped by the 0.12-lot ceiling and 1:10 margin.
+> **Note on the "+175R" trap:** the raw-R winner was `30m/5m/1m` sized off the 1m
+> ATR (+175R). That relied on ~$0.40 stops the ~$0.30 spread would obliterate in
+> live trading. Sizing exits from 15m ATR is what makes the edge survive real
+> costs — hence the active config above.
+
+**Dollar terms on this $5k account** (risk capped at $60/signal, §10): at
++0.136R average and ~3.5 signals/day, dollar results scale with the per-signal
+risk and account size. Live results will differ from backtest — this is a signal
+generator, not a guarantee.
+
+### Backtest tooling
+- `fullyear_backtest.py` — full-year, vectorized, `merge_asof` timeframe
+  alignment (no look-ahead), tests the practical exit-ATR variants.
+- `timeframe_optimizer.py` — quick multi-combo scan on shorter windows.
+- Input data (gitignored, ~264MB): `data/xau_train.parquet`, `data/xau_test.parquet`.
