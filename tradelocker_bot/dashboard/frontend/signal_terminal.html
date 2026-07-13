@@ -157,8 +157,8 @@ body{background:#0a0a0a;color:#fff;font-family:"JetBrains Mono","SF Mono","Fira 
     <div class="stat-sub" id="stat-pnl-pct">+0.0%</div>
   </div>
   <div class="stat-box">
-    <div class="stat-label">ATR (5m)</div>
-    <div class="stat-value" id="stat-atr">$7.29</div>
+    <div class="stat-label">ATR (15m)</div>
+    <div class="stat-value" id="stat-atr">$8.62</div>
     <div class="stat-sub">from TradeLocker</div>
   </div>
   <div class="stat-box">
@@ -189,7 +189,7 @@ body{background:#0a0a0a;color:#fff;font-family:"JetBrains Mono","SF Mono","Fira 
     <!-- PRICE CHART -->
     <div class="chart-panel">
       <div class="chart-header">
-        <span class="chart-title">XAUUSD PRICE // 5m</span>
+        <span class="chart-title">XAUUSD PRICE // LIVE</span>
         <span class="chart-tf" id="price-last">--</span>
       </div>
       <div class="chart-container">
@@ -789,18 +789,26 @@ function showPopup(type, title, detail, sub, duration) {
   }, dur);
 }
 
-// Track feed entries we've already shown popups for
-let lastPopupFeedLength = 0;
+// Track which feed entries we've already popped (by signature, order-agnostic)
+let seenFeedKeys = null;
+function feedKey(f) { return (f.time || '') + '|' + (f.label || '') + '|' + (f.text || ''); }
 
 function checkForPopups(d) {
   if (!d.feed || !d.feed.length) return;
-  if (d.feed.length <= lastPopupFeedLength) return;
 
-  // Check new feed entries
-  const newEntries = d.feed.slice(0, d.feed.length - lastPopupFeedLength);
-  lastPopupFeedLength = d.feed.length;
+  // First snapshot: mark existing backlog as seen so we don't pop a flood on load
+  if (seenFeedKeys === null) {
+    seenFeedKeys = new Set(d.feed.map(feedKey));
+    return;
+  }
+  // Keep the seen-set from growing unbounded
+  if (seenFeedKeys.size > 500) seenFeedKeys = new Set(d.feed.map(feedKey));
 
-  for (const entry of newEntries) {
+  // Feed is oldest -> newest; fire a popup for any entry we haven't seen
+  for (const entry of d.feed) {
+    const k = feedKey(entry);
+    if (seenFeedKeys.has(k)) continue;
+    seenFeedKeys.add(k);
     if (!entry.label) continue;
     const label = entry.label.toUpperCase();
     const text = entry.text || '';

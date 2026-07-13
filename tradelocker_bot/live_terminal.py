@@ -695,11 +695,15 @@ class DashboardState:
                     trade["sl"] = trade["entry"]  # move SL to BE
                     pnl_tp1 = trade["lots"] * 100 * (trade["tp1"] - trade["entry"]) * 0.10
                     await send_telegram(f"TP1 HIT +${pnl_tp1:.2f} (closed 10%) | SL moved to breakeven | Riding 90%")
+                    self.signal_feed.append({"time": datetime.now(timezone.utc).strftime("%H:%M"),
+                        "type": "win", "label": "TP1 HIT", "text": f"+${pnl_tp1:.2f} (10% banked, SL->BE)"})
                 elif price >= trade["tp2"] and not trade["tp2_hit"]:
                     trade["tp2_hit"] = True
                     trade["sl"] = trade["tp1"]  # move SL to TP1
                     pnl_tp2 = trade["lots"] * 100 * (trade["tp2"] - trade["entry"]) * 0.20
                     await send_telegram(f"TP2 HIT +${pnl_tp2:.2f} (closed 20%) | SL moved to TP1 | Riding 70%")
+                    self.signal_feed.append({"time": datetime.now(timezone.utc).strftime("%H:%M"),
+                        "type": "win", "label": "TP2 HIT", "text": f"+${pnl_tp2:.2f} (20% banked, SL->TP1)"})
                 elif price >= trade["tp_final"]:
                     hit = "FINAL TP HIT"
                     pnl = trade["lots"] * 100 * (
@@ -720,11 +724,15 @@ class DashboardState:
                     trade["sl"] = trade["entry"]
                     pnl_tp1 = trade["lots"] * 100 * (trade["entry"] - trade["tp1"]) * 0.10
                     await send_telegram(f"TP1 HIT +${pnl_tp1:.2f} (closed 10%) | SL moved to breakeven | Riding 90%")
+                    self.signal_feed.append({"time": datetime.now(timezone.utc).strftime("%H:%M"),
+                        "type": "win", "label": "TP1 HIT", "text": f"+${pnl_tp1:.2f} (10% banked, SL->BE)"})
                 elif price <= trade["tp2"] and not trade["tp2_hit"]:
                     trade["tp2_hit"] = True
                     trade["sl"] = trade["tp1"]
                     pnl_tp2 = trade["lots"] * 100 * (trade["entry"] - trade["tp2"]) * 0.20
                     await send_telegram(f"TP2 HIT +${pnl_tp2:.2f} (closed 20%) | SL moved to TP1 | Riding 70%")
+                    self.signal_feed.append({"time": datetime.now(timezone.utc).strftime("%H:%M"),
+                        "type": "win", "label": "TP2 HIT", "text": f"+${pnl_tp2:.2f} (20% banked, SL->TP1)"})
                 elif price <= trade["tp_final"]:
                     hit = "FINAL TP HIT"
                     pnl = trade["lots"] * 100 * (

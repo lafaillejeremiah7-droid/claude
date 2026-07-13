@@ -67,7 +67,7 @@ def rsi(close, period=14):
 
 
 def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200,
-             exit_atr_tf=None):
+             exit_atr_tf=None, return_signals=False):
     # Build timeframes
     g = resample_tf(df1m, TF_MIN[gate_tf])
     p = resample_tf(df1m, TF_MIN[pb_tf])
@@ -154,6 +154,7 @@ def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200
 
     cooldown_bars = max(1, cooldown_min // TF_MIN[entry_tf])
     results = []
+    sig_records = []  # (dt, r, exit_atr, entry_price)
     last_i = -10 ** 9
 
     for _, row in cand.iterrows():
@@ -227,6 +228,7 @@ def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200
             move = (e_c[j2] - entry_price) * direction
             r = move / sl_dist
         results.append(r)
+        sig_records.append((row["dt"], r, a, entry_price))
         last_i = i
 
     if not results:
@@ -237,7 +239,7 @@ def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200
     wins = int((results > 0).sum())
     losses = int((results < 0).sum())
     total = len(results)
-    return {
+    out = {
         "combo": f"{gate_tf}/{pb_tf}/{entry_tf}",
         "signals": total,
         "wins": wins,
@@ -247,6 +249,9 @@ def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200
         "avg_r": round(float(results.mean()), 3),
         "tp_final_pct": round(float((results == results.max()).mean() * 100), 1),
     }
+    if return_signals:
+        out["records"] = sig_records
+    return out
 
 
 if __name__ == "__main__":
