@@ -69,6 +69,9 @@ def _tv_msg(func, params):
 class LiveFeed:
     def __init__(self):
         self.price = 0.0
+        self.bid = 0.0
+        self.ask = 0.0
+        self.price_source = "init"
         self.high = 0.0
         self.low = 0.0
         self.open = 0.0
@@ -100,12 +103,17 @@ class LiveFeed:
         TL_EMAIL = "lafaillejeremiah7@gmail.com"
         TL_PASS = ",3)m1U"
         TL_SERVER = "AQUA"
-        TL_ACC_NUM = "2325106"  # D#2325106
-        TL_INSTRUMENT = "1714"
-        TL_ROUTE_INFO = "791554"
+        # NOTE: TradeLocker uses TWO identifiers for an account:
+        #   - account id  = 2325106  (the "D#2325106" you see in the app)
+        #   - accNum      = 4        (what the API 'accNum' header requires)
+        # The quotes endpoint needs accNum, NOT the display id.
+        TL_ACC_NUM = "4"            # accNum for account D#2325106
+        TL_INSTRUMENT = "1714"      # XAUUSD tradableInstrumentId
+        TL_ROUTE_INFO = "791554"    # XAUUSD INFO route (for quotes)
         token = None
         token_time = 0
-        
+        fail_count = 0
+
         while self._running:
             try:
                 # Refresh token every 5 min
@@ -116,7 +124,10 @@ class LiveFeed:
                     if r.status_code in (200, 201):
                         token = r.json()["accessToken"]
                         token_time = time.time()
-                
+                    else:
+                        print(f"TradeLocker auth failed: {r.status_code} {r.text[:150]}")
+                        token = None
+
                 if token:
                     r = _req.get(f"{TL_URL}/trade/quotes",
                                  headers={"Authorization": f"Bearer {token}", "accNum": TL_ACC_NUM},
@@ -128,7 +139,17 @@ class LiveFeed:
                         bid = d.get("bp", 0)
                         if ask > 0 and bid > 0:
                             self.price = (ask + bid) / 2  # mid price
+                            self.bid = bid
+                            self.ask = ask
                             self.last_update = time.time()
+                            self.price_source = "TradeLocker"
+                            fail_count = 0
+                    else:
+                        fail_count += 1
+                        if fail_count <= 3 or fail_count % 10 == 0:
+                            print(f"TradeLocker quote failed: {r.status_code} {r.text[:150]}")
+                        if r.status_code in (401, 403):
+                            token = None  # force re-auth
             except Exception as e:
                 print(f"TradeLocker price error: {e}")
             time.sleep(10)
