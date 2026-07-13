@@ -1091,11 +1091,19 @@ async def lifespan(app: FastAPI):
     _background_tasks.append(asyncio.create_task(price_loop()))
     _background_tasks.append(asyncio.create_task(yield_loop()))
     _background_tasks.append(asyncio.create_task(market_status_loop()))
+    await send_telegram("BOT has started")
     yield
     # Shutdown: stop feed thread and cancel background tasks cleanly
     feed._running = False
     for t in _background_tasks:
         t.cancel()
+    # Send shutdown notification (best-effort, may not deliver if network is already down)
+    try:
+        import httpx as _hx
+        async with _hx.AsyncClient(timeout=5) as _c:
+            await _c.post(TELEGRAM_URL, json={"chat_id": TELEGRAM_CHAT_ID, "text": "Bot has stopped"})
+    except Exception:
+        pass
 
 app = FastAPI(title="XAUUSD ASWP Live Terminal", lifespan=lifespan)
 
@@ -1205,6 +1213,11 @@ if __name__ == "__main__":
 
     def _force_exit(*_):
         """Ctrl+C = instant kill. No graceful shutdown delay."""
+        try:
+            import requests as _r
+            _r.post(TELEGRAM_URL, json={"chat_id": TELEGRAM_CHAT_ID, "text": "Bot has stopped"}, timeout=3)
+        except Exception:
+            pass
         print("\n Bot stopped.")
         _os._exit(0)
 
