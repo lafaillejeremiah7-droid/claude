@@ -398,6 +398,20 @@ def compute_atr(bars, period=14):
     if len(trs) < period: return sum(trs)/len(trs) if trs else 0
     return sum(trs[-period:]) / period
 
+def compute_atr_series(bars, period=14):
+    """ATR value at every bar (not just the latest) — needed to build the
+    rolling average used by the adaptive SL/TP volatility-ratio feature."""
+    if len(bars) < 2: return []
+    trs = []
+    for i in range(1, len(bars)):
+        h, l, pc = bars[i][2], bars[i][3], bars[i-1][4]
+        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
+    out = []
+    for i in range(len(trs)):
+        window = trs[max(0, i - period + 1):i + 1]
+        out.append(sum(window) / len(window))
+    return out
+
 def compute_rsi(closes, period=14):
     if len(closes) < period + 1: return 50
     gains, losses = [], []
@@ -454,6 +468,29 @@ class DashboardState:
         self.SIGNAL_COOLDOWN = 180  # 3 minutes between signals
         self.MAX_SIGNALS_DAY = 4
         self.MIN_EV = 0.55
+
+        # --- ADAPTIVE SL/TP (validated via 100,000-trial random search on
+        # real 1-minute XAUUSD data, then confirmed out-of-sample on a
+        # separate real year — see run_100k_search.py / best_adaptive_params.json)
+        #
+        #   In-sample  (Nov 2023-Nov 2024): static $5,381.57 -> adaptive $6,364.00  (+18.2%)
+        #   Out-sample (Dec 2022-Nov 2023): static $1,260.16 -> adaptive $2,654.06  (+110.6%)
+        #   Out-of-sample max drawdown also LOWER: $561.68 vs $751.12 (static)
+        #
+        # SL width = ADAPT_BASE_SL * clip(vol_ratio, ADAPT_VOL_LO, ADAPT_VOL_HI) * ATR(15m)
+        #   vol_ratio = current 15m ATR / its own 50-bar rolling average
+        #   -> tightens the stop in calm conditions, widens it when vol expands
+        # TP3 (final/runner leg only) extension = clip(1 + ADAPT_TREND_GAIN *
+        #   (trend_strength - 1), ADAPT_TP_LO, ADAPT_TP_HI)
+        #   trend_strength = |EMA20_1h - EMA50_1h| / ATR(1h)
+        #   -> lets the runner leg ride further when the 1H trend has strong
+        #      conviction, keeps it closer when the trend is weak/borderline
+        self.ADAPT_BASE_SL = 0.8939
+        self.ADAPT_VOL_LO = 0.8559
+        self.ADAPT_VOL_HI = 1.0723
+        self.ADAPT_TREND_GAIN = 1.7875
+        self.ADAPT_TP_LO = 0.3295
+        self.ADAPT_TP_HI = 2.8771
         # Load persisted signal P&L from disk (survives restarts)
         pnl_data = _load_signal_pnl()
         self.all_time_pnl = pnl_data.get("all_time_pnl", 0.0)
@@ -514,6 +551,16 @@ class DashboardState:
         if atr_val <= 0:
             return
 
+        # Volatility-expansion ratio (adaptive SL feature): current 15m ATR
+        # vs its own 50-bar rolling average. >1 = vol expanding right now.
+        atr_15m_series = compute_atr_series(bars_15m)
+        if len(atr_15m_series) >= 10:
+            window = atr_15m_series[-50:]
+            atr_15m_avg = sum(window) / len(window)
+            vol_ratio = atr_val / atr_15m_avg if atr_15m_avg > 0 else 1.0
+        else:
+            vol_ratio = 1.0
+
         # 1H trend gate
         e20_1h = compute_ema(closes_1h, 20)
         e50_1h = compute_ema(closes_1h, 50)
@@ -523,6 +570,11 @@ class DashboardState:
             direction = "sell"
         else:
             return
+
+        # Trend strength (adaptive TP3 feature): how separated is the 1H
+        # trend, normalized by 1H ATR. Same definition used in the search.
+        atr_1h = compute_atr(bars_1h)
+        trend_strength = abs(e20_1h[-1] - e50_1h[-1]) / atr_1h if atr_1h > 0 else 1.0
 
         # 15m pullback zone
         e20_15m = compute_ema(closes_15m, 20)
@@ -576,11 +628,23 @@ class DashboardState:
 
         self.ev_passed += 1
 
-        # SIGNAL FIRES — compute levels
+        # SIGNAL FIRES — compute levels (ADAPTIVE SL/TP, validated formula)
         entry = f.price
-        sl_mult = 1.0
         spread = 0.30
+
+        # Adaptive SL width: base multiplier scaled by the clipped
+        # volatility-expansion ratio (tighter when calm, wider when vol
+        # is actively expanding — but only within the validated band).
+        vol_ratio_clipped = min(self.ADAPT_VOL_HI, max(self.ADAPT_VOL_LO, vol_ratio))
+        sl_mult = self.ADAPT_BASE_SL * vol_ratio_clipped
         sl_dist = sl_mult * atr_val + spread / 2
+        base_move = sl_mult * atr_val
+
+        # Adaptive TP3 (runner leg) extension: scales with how strong the
+        # 1H trend is. TP1/TP2 stay at fixed 1R/2R off the (adaptive) sl_dist;
+        # only the final 70% runner leg extends/contracts with trend strength.
+        tp_ext = 1 + self.ADAPT_TREND_GAIN * (trend_strength - 1)
+        tp_ext = min(self.ADAPT_TP_HI, max(self.ADAPT_TP_LO, tp_ext))
 
         # Position sizing: risk $60 max per signal
         contract = 100.0
@@ -596,20 +660,20 @@ class DashboardState:
             lots = max(0.01, round(int((self.equity * 0.95 * leverage / (contract * entry)) * 100) / 100, 2))
 
         risk_dollars = lots * loss_per_lot
-        base_move = sl_mult * atr_val
+        tp3_move = 3.0 * base_move * tp_ext
 
         if direction == "buy":
             sl = round(entry - sl_dist, 2)
             tp1 = round(entry + 1.0 * base_move + spread, 2)
             tp2 = round(entry + 2.0 * base_move + spread, 2)
-            tp_final = round(entry + 3.0 * base_move + spread, 2)
+            tp_final = round(entry + tp3_move + spread, 2)
         else:
             sl = round(entry + sl_dist, 2)
             tp1 = round(entry - 1.0 * base_move - spread, 2)
             tp2 = round(entry - 2.0 * base_move - spread, 2)
-            tp_final = round(entry - 3.0 * base_move - spread, 2)
+            tp_final = round(entry - tp3_move - spread, 2)
 
-        full_win = lots * contract * (0.10 * 1.0 * base_move + 0.20 * 2.0 * base_move + 0.70 * 3.0 * base_move)
+        full_win = lots * contract * (0.10 * 1.0 * base_move + 0.20 * 2.0 * base_move + 0.70 * tp3_move)
 
         # Build signal
         self.active_signal = {

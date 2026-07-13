@@ -67,7 +67,7 @@ def rsi(close, period=14):
 
 
 def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200,
-             exit_atr_tf=None, return_signals=False):
+             exit_atr_tf=None, return_signals=False, sl_mult=1.0):
     # Build timeframes
     g = resample_tf(df1m, TF_MIN[gate_tf])
     p = resample_tf(df1m, TF_MIN[pb_tf])
@@ -169,10 +169,11 @@ def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200
         if a <= 0:
             continue
         spread = 0.30
-        sl_dist = a + spread / 2
-        tp1 = a + spread
-        tp2 = 2 * a + spread
-        tp3 = 3 * a + spread
+        sl_dist = sl_mult * a + spread / 2
+        # TPs scale with sl_dist so R:R stays 1:1/2:1/3:1 regardless of SL width
+        tp1 = sl_dist + spread
+        tp2 = 2 * sl_dist + spread
+        tp3 = 3 * sl_dist + spread
 
         tp1_hit = tp2_hit = False
         outcome = "timeout"
@@ -228,7 +229,7 @@ def backtest(df1m, gate_tf, pb_tf, entry_tf, cooldown_min=180, max_hold_bars=200
             move = (e_c[j2] - entry_price) * direction
             r = move / sl_dist
         results.append(r)
-        sig_records.append((row["dt"], r, a, entry_price))
+        sig_records.append((row["dt"], r, sl_dist, entry_price))  # sl_dist = actual risk distance used
         last_i = i
 
     if not results:
