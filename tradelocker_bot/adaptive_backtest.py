@@ -60,6 +60,11 @@ def compute_features(df1m, gate_tf="1h", pb_tf="15m", entry_tf="1m", exit_atr_tf
     vol_ratio = (xa / xa_avg.replace(0, np.nan))
     exit_map = pd.DataFrame({"x_atr": xa, "vol_ratio": vol_ratio}, index=xa.index).dropna()
 
+    # 5-minute ATR (for the TSAI g1 volatility gate + SL/ATR noise cushion)
+    a5_df = fb.resample_tf(df1m, 5)
+    a5 = fb.atr(a5_df, 14)
+    atr5_map = pd.DataFrame({"atr5": a5}, index=a5.index).dropna()
+
     # Entry
     e_e20 = fb.ema(e["c"], 20)
     e_rsi = fb.rsi(e["c"])
@@ -78,11 +83,13 @@ def compute_features(df1m, gate_tf="1h", pb_tf="15m", entry_tf="1m", exit_atr_tf
     gate_r = gate.reset_index().rename(columns={"index": "dt"}).sort_values("dt")
     pb_r = pb.reset_index().rename(columns={"index": "dt"}).sort_values("dt")
     exit_r = exit_map.reset_index().rename(columns={"index": "dt"}).sort_values("dt")
+    atr5_r = atr5_map.reset_index().rename(columns={"index": "dt"}).sort_values("dt")
 
     m = pd.merge_asof(ent, gate_r, on="dt", direction="backward")
     m = pd.merge_asof(m, pb_r, on="dt", direction="backward")
     m = pd.merge_asof(m, exit_r, on="dt", direction="backward")
-    m = m.dropna(subset=["g_e20", "g_e50", "p_e20", "p_atr", "x_atr", "vol_ratio", "trend_strength"])
+    m = pd.merge_asof(m, atr5_r, on="dt", direction="backward")
+    m = m.dropna(subset=["g_e20", "g_e50", "p_e20", "p_atr", "x_atr", "vol_ratio", "trend_strength", "atr5"])
 
     m["dir"] = np.where(m["g_e20"] > m["g_e50"], 1, np.where(m["g_e20"] < m["g_e50"], -1, 0))
     m["pb_dist"] = (m["p_c"] - m["p_e20"]).abs() / m["p_atr"].replace(0, np.nan)

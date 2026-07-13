@@ -13,3 +13,9 @@ signal_pnl.json
 # Large historical data files (backtest inputs, not versioned)
 *.parquet
 tradelocker_bot/data/
+
+# Phase analysis checkpoints/results
+phase*_ckpt.json
+tsai_best.json
+best_adaptive_params.json
+phase*_result.json
