@@ -329,7 +329,7 @@ class DashboardState:
         if atr_15m <= 0:
             return
         dist_15m = abs(closes_15m[-1] - e20_15m[-1]) / atr_15m
-        if dist_15m > 0.5:
+        if dist_15m > 1.5:
             return
 
         # 5m confirmation trigger
@@ -594,7 +594,7 @@ class DashboardState:
             e20_15 = compute_ema(closes_15m, 20)
             atr_15 = compute_atr(f.bars_15m)
             if e20_15 and atr_15 > 0:
-                if abs(closes_15m[-1] - e20_15[-1]) / atr_15 < 0.5:
+                if abs(closes_15m[-1] - e20_15[-1]) / atr_15 < 1.5:
                     pipeline = 3
         if pipeline >= 3 and 35 < rsi_val < 65:
             pipeline = 4

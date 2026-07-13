@@ -120,7 +120,7 @@ from typing import List, Optional, Sequence, Tuple
 class EngineConfig:
     # --- Multi-TF structure ---
     sl_atr_mult: float = 1.0          # SL = 1.0 x ATR(5m)
-    pullback_zone_atr: float = 0.5    # 15m: price within +/-0.5 ATR of EMA20
+    pullback_zone_atr: float = 1.5    # 15m: price within +/-0.5 ATR of EMA20
     ema_fast: int = 20
     ema_slow: int = 50
     rsi_period: int = 14
