@@ -79,8 +79,22 @@ TL_EMAIL = "lafaillejeremiah7@gmail.com"
 TL_PASS = ",3)m1U"
 TL_SERVER = "AQUA"
 TL_ACC_NUM = "4"            # accNum for account D#2325106
+TL_ACCOUNT_ID = "2325106"   # account id (used in /trade/accounts/{id}/... paths)
 TL_INSTRUMENT = "1714"      # XAUUSD tradableInstrumentId
 TL_ROUTE_INFO = "791554"    # XAUUSD INFO route (quotes + history)
+
+# Starting balance for this AquaFunded account (currently ~$4,990, started at
+# $5,000). All-time P&L = live equity - STARTING_BALANCE. Adjust if your
+# account was funded with a different initial amount.
+STARTING_BALANCE = 5000.0
+
+# accountDetailsData array indices (from /trade/config accountDetailsConfig)
+ADD_BALANCE = 0            # realized balance
+ADD_EQUITY = 1            # projectedBalance = balance + open P&L
+ADD_MARGIN_USED = 10      # maintMarginReq
+ADD_TODAY_NET = 18        # today's realized P&L
+ADD_OPEN_PNL = 23         # openNetPnL (unrealized)
+ADD_POSITIONS = 24        # positionsCount
 
 def _tv_session():
     return "qs_" + "".join(_random.choices(_string.ascii_lowercase, k=12))
@@ -115,6 +129,14 @@ class LiveFeed:
         self._token_time = 0.0
         self._token_lock = threading.Lock()
         self.bars_source = "none"
+        # Real account state pulled live from TradeLocker
+        self.acct_ok = False
+        self.acct_balance = 0.0
+        self.acct_equity = 0.0
+        self.acct_open_pnl = 0.0
+        self.acct_today_pnl = 0.0
+        self.acct_margin = 0.0
+        self.acct_positions = 0
 
     def start_websocket(self):
         """Start TradingView websocket + HTTP fallback in background thread."""
@@ -155,9 +177,34 @@ class LiveFeed:
                             print(f"TradeLocker quote failed: {r.status_code} {r.text[:150]}")
                         if r.status_code in (401, 403):
                             self._token = None  # force re-auth
+
+                    # Pull REAL account state (balance, equity, open/today P&L)
+                    self._fetch_account_state(token)
             except Exception as e:
                 print(f"TradeLocker price error: {e}")
             time.sleep(10)
+
+    def _fetch_account_state(self, token):
+        """Poll TradeLocker for real account balance / equity / P&L."""
+        import requests as _req
+        try:
+            r = _req.get(f"{TL_URL}/trade/accounts/{TL_ACCOUNT_ID}/state",
+                         headers={"Authorization": f"Bearer {token}", "accNum": TL_ACC_NUM},
+                         timeout=8)
+            if r.status_code == 200:
+                data = r.json().get("d", {}).get("accountDetailsData", [])
+                if data and len(data) > ADD_POSITIONS:
+                    self.acct_balance = float(data[ADD_BALANCE])
+                    self.acct_equity = float(data[ADD_EQUITY])
+                    self.acct_open_pnl = float(data[ADD_OPEN_PNL])
+                    self.acct_today_pnl = float(data[ADD_TODAY_NET])
+                    self.acct_margin = float(data[ADD_MARGIN_USED])
+                    self.acct_positions = int(data[ADD_POSITIONS])
+                    self.acct_ok = True
+            elif r.status_code in (401, 403):
+                self._token = None
+        except Exception as e:
+            print(f"TradeLocker account state error: {e}")
 
     def _ensure_token(self):
         """Return a valid TradeLocker JWT, refreshing if older than 5 min. Thread-safe."""
@@ -734,9 +781,34 @@ class DashboardState:
         weekend_clear = not (now.weekday() == 4 and now.hour >= 19)
         hours_active = now.hour not in (21, 22)
 
+        # Prefer REAL account data from TradeLocker; fall back to simulated
+        if f.acct_ok:
+            equity = f.acct_equity
+            balance = f.acct_balance
+            open_pnl = f.acct_open_pnl
+            today_pnl = f.acct_today_pnl
+            margin_used = f.acct_margin
+            open_positions = f.acct_positions
+            all_time_pnl = equity - STARTING_BALANCE
+        else:
+            equity = self.equity
+            balance = self.equity
+            open_pnl = 0.0
+            today_pnl = self.daily_pnl
+            margin_used = 0.0
+            open_positions = 0
+            all_time_pnl = self.equity - STARTING_BALANCE
+
         return {
             "mode": "live",
-            "equity": self.equity,
+            "equity": equity,
+            "balance": balance,
+            "open_pnl": open_pnl,
+            "all_time_pnl": round(all_time_pnl, 2),
+            "starting_balance": STARTING_BALANCE,
+            "margin_used": margin_used,
+            "open_positions": open_positions,
+            "account_live": f.acct_ok,
             "current_price": f.price,
             "atr": round(atr_val, 2),
             "trend_1h": trend,
@@ -749,7 +821,7 @@ class DashboardState:
             "current_ev": round(ev, 3),
             "memory_size": 2500,
             "pipeline_stage": pipeline,
-            "daily_pnl": self.daily_pnl,
+            "daily_pnl": today_pnl,
             "max_dd": self.max_dd,
             "signals_today": self.signals_today,
             "signals_count": self.total_signals,
