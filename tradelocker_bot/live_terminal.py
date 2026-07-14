@@ -502,9 +502,9 @@ class DashboardState:
         self.ADAPT_VOL_LO = 0.80        # vol-clip (session gold: 0.8-1.3 typical)
         self.ADAPT_VOL_HI = 1.30
         self.ADAPT_TREND_GAIN = 0.0     # no trend extension — fixed 2R cap
-        self.TP1_R = 0.70               # 35% of 2.0R target
-        self.TP2_R = 2.0                # final target (the runner's destination)
-        self.TP3_R_BASE = 2.0           # same as TP2 (no separate 3rd leg)
+        self.TP1_R = 0.77               # 35% of 2.2R target
+        self.TP2_R = 2.2                # final target (the runner's destination)
+        self.TP3_R_BASE = 2.2           # same as TP2 (no separate 3rd leg)
         self.TP_EXT_LO = 1.0            # no extension
         self.TP_EXT_HI = 1.0            # no extension
 
