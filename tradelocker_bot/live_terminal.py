@@ -498,10 +498,13 @@ class DashboardState:
         # Geometry: SL 1.2× ATR | TP capped 2.0R | TP1 at 35% of target (0.7R)
         # Management: close 45% at TP1 + SL→BE | 55% runner to 2.0R, trail 1R
         # behind peak. NO multi-leg runner (proven: simpler = more robust OOS).
+        # SL is FIXED at 1.2x ATR — this is the validated static winner. The
+        # vol-scaled SL (an earlier phase-25 experiment) was NOT part of the
+        # winning config, so the clip band is pinned to 1.0/1.0 => sl = 1.2xATR.
         self.ADAPT_BASE_SL = 1.2
-        self.ADAPT_VOL_LO = 0.80        # vol-clip (session gold: 0.8-1.3 typical)
-        self.ADAPT_VOL_HI = 1.30
-        self.ADAPT_TREND_GAIN = 0.0     # no trend extension — fixed 2R cap
+        self.ADAPT_VOL_LO = 1.0         # pinned -> fixed SL (validated static)
+        self.ADAPT_VOL_HI = 1.0         # pinned -> fixed SL (validated static)
+        self.ADAPT_TREND_GAIN = 0.0     # no trend extension — fixed 2.2R cap
         self.TP1_R = 0.77               # 35% of 2.2R target
         self.TP2_R = 2.2                # final target (the runner's destination)
         self.TP3_R_BASE = 2.2           # same as TP2 (no separate 3rd leg)
@@ -527,22 +530,16 @@ class DashboardState:
         # the position before TP1, force emergency exit.
         self.FLASH_THRESHOLD = 30.0     # dollars (300 pips × $0.10/pip)
 
-        # SESSION WINDOW: tightened to peak London/NY (12-17 UTC, proven best)
-        self.SESSION_START = 12
-        self.SESSION_END = 17           # (was 20; ISAGI validated 12-17 is optimal)
-        # + NY session, 12-20 UTC. This is where gold's directional edge lives.
-        # Keeping $45 risk but restricting sessions: 2025-26 DD $407->$312 (gate
-        # FAIL->PASS), WR 43%->46-50%, +$17/wk. Validated on 2023-24 too.
+        # SESSION WINDOW: peak London/NY overlap only, 12-17 UTC inclusive.
+        # ISAGI validated this as optimal on held-out 2026 (trading the Asian /
+        # early-London chop was the source of the drawdown breach). Single source
+        # of truth — no duplicate/overriding block below anymore.
         self.SESSION_START = 12         # UTC hour, inclusive
-        self.SESSION_END = 20           # UTC hour, inclusive
-        self.RISK_DAILY_STOP = 120.0    # pause new signals after daily loss <= -this
-        self.RISK_DD_THROTTLE = 200.0   # when (peak - equity) >= this ...
-        self.RISK_THROTTLE_FACTOR = 0.35  # ... cut risk to 35% until a new peak
-        # THE FLOW: ignition signals (vol expanding + fresh trend + early RSI)
-        # are exempt from the DD throttle — they keep $25 risk even during
-        # drawdowns because they have a provably higher win rate (48-49% vs
-        # 44-46% baseline). Validated +$16/wk IS, +$7/wk OOS, gate-safe.
-        self.FLOW_IGN_DD_RISK = 25.0    # risk for ignition signals during DD
+        self.SESSION_END = 17           # UTC hour, inclusive
+
+        # Daily loss circuit-breaker: pause new signals once the day's realized
+        # loss reaches -$120 (hard capital-preservation gate, per S-tier spec).
+        self.RISK_DAILY_STOP = 120.0
 
         # --- ASWP adaptive brain (real similarity-weighted memory, wired live) ---
         self.aswp = ASWP(EngineConfig())
@@ -636,6 +633,18 @@ class DashboardState:
         closes_1m = [b[4] for b in bars_1m]
         closes_15m = [b[4] for b in bars_15m]
         closes_1h = [b[4] for b in bars_1h]
+
+        # M5 VOLUME-DENSITY FILTER (validated +$8.8/wk). Volume proxy = the 1m
+        # bar RANGE (no true tick volume on this feed). vdens = avg range of the
+        # last 5 bars / avg range of the last 20 bars, both taken from PRE-ENTRY
+        # bars only (no look-ahead). vdens < 0.6 = deep compression with no
+        # expansion => low-quality chop setup, reject it.
+        rng_1m = [(b[2] - b[3]) for b in bars_1m[-25:]]   # high - low, pre-entry
+        avg5 = sum(rng_1m[-5:]) / 5.0
+        avg20 = sum(rng_1m[-20:]) / 20.0
+        vdens = avg5 / (avg20 + 1e-9)
+        if vdens < self.VDENS_MIN:
+            return  # compressed chop — the edge isn't there
 
         # Exit (SL/TP) sizing uses 15m ATR — wide enough that the spread is a
         # negligible fraction of the stop (1m ATR would be far too tight).
@@ -773,42 +782,40 @@ class DashboardState:
         tp3_r = self.TP3_R_BASE * tp_ext
         tp3_move = tp3_r * base_move
 
-        # Per-signal multi-TP harvest allocation (front-loaded 30/40/30, with a
-        # runner-tilt in strong trends).
+        # Harvest allocation: 45% banked at TP1 (0.77R) + SL->BE, 55% runner to
+        # 2.2R (A3=0 => no third leg; tilt disabled — static is the proven best).
         a1, a2 = self.ALLOC_A1, self.ALLOC_A2
         if trend_strength >= self.TILT_TREND_MIN:
             a1 = max(0.02, a1 - self.ALLOC_TILT * 0.5)
             a2 = max(0.02, a2 - self.ALLOC_TILT * 0.5)
         a3 = 1.0 - a1 - a2
 
-        # THE FLOW — ignition score: is this signal catching the move at ignition?
-        # vol expanding + trend fresh + RSI early = the move is STARTING.
-        flow_score = 0
-        if vol_ratio > 1.2:
-            flow_score += 1      # volatility EXPANDING — energy entering
-        if trend_strength < 1.0:
-            flow_score += 1      # trend FRESH (not exhausted)
-        if 42 <= rsi_val <= 58:
-            flow_score += 1      # RSI dead zone — you're EARLY
-        is_ignition = flow_score >= 2
+        # FRACTIONAL KELLY SIZING (validated ISAGI static, EGOLESS).
+        # Risk is driven by the *measured* win probability of recent closed
+        # trades — NOT by a win/loss streak or any sentiment. Peak $70, floor
+        # $17.50; forced to the floor whenever total drawdown >= $200 (defensive).
+        #   p     = win rate over the last 20 closed trades (0.5 until >=5 exist)
+        #   b     = payoff ratio = final target in R (TP2_R)
+        #   f*    = Kelly fraction = max(0, (p*(b+1) - 1) / b)
+        #   risk  = RISK_BASE * min(1, f*/0.3), clamped to [RISK_FLOOR, RISK_BASE]
+        recent = self.signal_results[-20:]
+        if len(recent) >= 5:
+            p_win = sum(1 for r in recent if r.get("pnl", 0.0) > 0) / len(recent)
+        else:
+            p_win = 0.5
+        b_payoff = self.TP2_R
+        fstar = max(0.0, (p_win * (b_payoff + 1.0) - 1.0) / b_payoff)
+        risk_budget = self.RISK_BASE * min(1.0, fstar / 0.3)
+        if (self.peak - self.equity) >= self.RISK_DD_DEFENSIVE:
+            risk_budget = self.RISK_FLOOR          # hyper-defensive during deep DD
+        risk_budget = min(self.RISK_BASE, max(self.RISK_FLOOR, risk_budget))
 
-        # Position sizing with DRAWDOWN CIRCUIT-BREAKER + THE FLOW:
-        # Base $45 risk; during DD >= $200, normal signals throttle to 35%;
-        # IGNITION signals (The Flow) keep $25 because they have a provably
-        # higher win rate and represent the best path to recovery.
         contract = 100.0
         leverage = 10.0
         loss_per_lot = contract * sl_dist
-        if (self.peak - self.equity) >= self.RISK_DD_THROTTLE:
-            if is_ignition:
-                risk_budget = self.FLOW_IGN_DD_RISK   # $25 — commit to the win
-            else:
-                risk_budget = self.RISK_BASE * self.RISK_THROTTLE_FACTOR  # $15.75 — protect
-        else:
-            risk_budget = self.RISK_BASE  # $45 — full conviction at peak
         max_loss = risk_budget
         lots = min(0.12, max_loss / loss_per_lot)
-        lots = max(0.01, round(int(lots * 100) / 100, 2))  # round to 0.01 step
+        lots = max(0.01, round(int(lots * 100) / 100, 2))  # floor to 0.01 step
 
         # Margin check
         margin = lots * contract * entry / leverage
@@ -863,17 +870,30 @@ class DashboardState:
 
         # SEND TELEGRAM
         arrow = "BUY" if direction == "buy" else "SELL"
-        _pc1, _pc2, _pc3 = int(a1 * 100), int(a2 * 100), int(a3 * 100)
-        msg = (
-            f"XAUUSD {arrow}  |  {lots} lots\n"
-            f"Entry: {entry:.2f}\n"
-            f"SL: {sl:.2f}  (risk -${risk_dollars:.2f})\n"
-            f"TP1: {tp1:.2f}  (close {_pc1}%, SL->BE)\n"
-            f"TP2: {tp2:.2f}  (close {_pc2}%, SL->TP1)\n"
-            f"Final: {tp_final:.2f}  (ride {_pc3}%)\n"
-            f"Probability: {p_tp1:.2f}  |  EV: +{ev:.2f}R\n"
-            f"Est. full win: +${full_win:.2f}"
-        )
+        _pc1, _pc2, _pc3 = int(round(a1 * 100)), int(round(a2 * 100)), int(round(a3 * 100))
+        if _pc3 <= 0:
+            # 2-leg validated static: bank at TP1 (SL->BE), runner to the final
+            # target (= TP2 level). No separate third leg.
+            msg = (
+                f"XAUUSD {arrow}  |  {lots} lots\n"
+                f"Entry: {entry:.2f}\n"
+                f"SL: {sl:.2f}  (risk -${risk_dollars:.2f})\n"
+                f"TP1: {tp1:.2f}  (close {_pc1}%, SL->BE)\n"
+                f"Final: {tp2:.2f}  (ride {_pc2}%)\n"
+                f"Probability: {p_tp1:.2f}  |  EV: +{ev:.2f}R\n"
+                f"Est. full win: +${full_win:.2f}"
+            )
+        else:
+            msg = (
+                f"XAUUSD {arrow}  |  {lots} lots\n"
+                f"Entry: {entry:.2f}\n"
+                f"SL: {sl:.2f}  (risk -${risk_dollars:.2f})\n"
+                f"TP1: {tp1:.2f}  (close {_pc1}%, SL->BE)\n"
+                f"TP2: {tp2:.2f}  (close {_pc2}%, SL->TP1)\n"
+                f"Final: {tp_final:.2f}  (ride {_pc3}%)\n"
+                f"Probability: {p_tp1:.2f}  |  EV: +{ev:.2f}R\n"
+                f"Est. full win: +${full_win:.2f}"
+            )
         await send_telegram(msg)
         print(f"[{ts_str}] SIGNAL SENT: {arrow} @ {entry:.2f}")
 
@@ -916,7 +936,24 @@ class DashboardState:
                 if _r_now > trade.get("mfe_r", 0.0):
                     trade["mfe_r"] = _r_now
 
-            if d == "buy":
+            # FLASH-CRASH BREAKER: if the most recent 1m bar spikes more than
+            # FLASH_THRESHOLD ($30 = 300 pips) AGAINST the position before TP1
+            # is banked, force an emergency market exit instead of waiting.
+            flash = False
+            if not trade["tp1_hit"] and len(self.feed.bars_1m) > 0:
+                _lb = self.feed.bars_1m[-1]     # [t, open, high, low, close]
+                adverse_move = (_lb[1] - _lb[3]) if d == "buy" else (_lb[2] - _lb[1])
+                if adverse_move >= self.FLASH_THRESHOLD:
+                    flash = True
+                    hit = "FLASH EXIT"
+                    # Loss is capped at the intended stop (-1R): the resting SL
+                    # (~1.2x ATR) fills first in a spike, so realized risk is the
+                    # planned risk, not the raw gapped price. Matches the engine.
+                    pnl = -trade["risk_dollars"]
+
+            if flash:
+                pass          # flash breaker already set hit + pnl
+            elif d == "buy":
                 if price <= trade["sl"]:
                     if trade["tp1_hit"]:
                         hit = "BREAKEVEN"
@@ -986,11 +1023,13 @@ class DashboardState:
                     await send_telegram(f"{emoji} {hit} | {arrow} from {trade['entry']:.2f}\nProfit: +${pnl:.2f}\nFull multi-TP captured.")
                 elif hit == "BREAKEVEN":
                     await send_telegram(f"BREAKEVEN | {arrow} from {trade['entry']:.2f}\nTP1 was banked (+${pnl:.2f}), rest closed at entry.")
+                elif hit == "FLASH EXIT":
+                    await send_telegram(f"FLASH-CRASH BREAKER | {arrow} from {trade['entry']:.2f}\nEmergency exit on a >${self.FLASH_THRESHOLD:.0f} adverse 1m spike: {pnl:+.2f}")
                 else:
                     await send_telegram(f"LOSS | {arrow} from {trade['entry']:.2f}\nSL hit: -${abs(pnl):.2f}")
                 
                 # ASWP LEARNS: feed this outcome back into the adaptive memory
-                full_stop = (hit == "SL HIT")   # hit -1R before ever reaching TP1
+                full_stop = hit in ("SL HIT", "FLASH EXIT")   # -1R (or worse) before TP1
                 try:
                     self.aswp.add(TradeMemory(features=trade.get("features", {}),
                                               mfe_r=trade.get("mfe_r", 0.0),
