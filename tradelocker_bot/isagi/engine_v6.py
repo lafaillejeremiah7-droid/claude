@@ -148,8 +148,10 @@ def main():
     pre = order[yr == 2025]; bt = order[yr == 2026]
     print(f"pre-train (2025) {len(pre)} signals | backtest (2026) {len(bt)} signals\n")
 
+    import copy
     mem = {}; wins = []
     mp, mem, wins = walk(P, pre, news, mem, wins, learn=True, seed=1)
+    mem_after_pre = copy.deepcopy(mem); wins_after_pre = list(wins)
     print(f"PRE-TRAIN 2025 (memory warming): ${mp['wk']:+.1f}/wk WR{mp['wr']:.0f}% "
           f"DDt${mp['ddt']:.0f} n={mp['n']} | ASWP memory entries: {len(mem)}")
     # HELD-OUT backtest starting WITH warm memory + warm Kelly stats
@@ -161,6 +163,17 @@ def main():
     print(f"      (cold-start 2026, empty memory: ${mc['wk']:+.1f}/wk WR{mc['wr']:.0f}% "
           f"DDt${mc['ddt']:.0f} {'PASS' if mc['gate'] else 'FAIL'})")
     print(f"\n  warm-memory effect: ${mb['wk']-mc['wk']:+.1f}/wk vs cold-start")
+
+    # ISOLATE the per-trade LEARNING loop: ON vs OFF on held-out 2026 (both warm-seeded)
+    import copy
+    memA = copy.deepcopy(mem_after_pre); memB = copy.deepcopy(mem_after_pre)
+    won = list(wins_after_pre)
+    mL, _, _ = walk(P, bt, news, memA, list(won), learn=True, seed=2)
+    mS, _, _ = walk(P, bt, news, memB, list(won), learn=False, seed=2)
+    print(f"\n  PER-TRADE LEARNING isolated (held-out 2026, warm-seeded):")
+    print(f"    learning ON : ${mL['wk']:+.1f}/wk WR{mL['wr']:.0f}% DDt${mL['ddt']:.0f} {'PASS' if mL['gate'] else 'FAIL'}")
+    print(f"    learning OFF: ${mS['wk']:+.1f}/wk WR{mS['wr']:.0f}% DDt${mS['ddt']:.0f} {'PASS' if mS['gate'] else 'FAIL'}")
+    print(f"    --> learn-from-every-mistake contribution: ${mL['wk']-mS['wk']:+.1f}/wk, DD ${mS['ddt']-mL['ddt']:+.0f} saved")
 
 
 if __name__ == "__main__":
