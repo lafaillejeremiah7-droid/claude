@@ -384,26 +384,32 @@ body::after {
 </div>
 
 <script>
-// Signal data — populated by live bot or empty on fresh start
-const signals = [];
+// Live connection to the bot API
+const API_BASE = window.location.origin;
+let signals = [];
 
-function renderStats(signals) {
-  const completed = signals.filter(s => s.result !== "PENDING");
-  const wins = completed.filter(s => s.pnl > 0);
-  const losses = completed.filter(s => s.pnl <= 0);
-  const totalPnl = completed.reduce((a, s) => a + (s.pnl || 0), 0);
-  const lastEquity = signals.length > 0 ? signals[signals.length-1].equity + totalPnl : 5000;
+async function fetchState() {
+  try {
+    const r = await fetch(API_BASE + '/api/state');
+    const data = await r.json();
+    document.getElementById('equity').textContent = '$' + data.equity.toLocaleString(undefined, {maximumFractionDigits:0});
+    const netPnl = data.net_pnl;
+    document.getElementById('netPnl').textContent = '$' + netPnl.toFixed(2);
+    document.getElementById('netPnl').className = 'value ' + (netPnl >= 0 ? 'profit' : 'loss');
+    document.getElementById('winRate').textContent = data.total_trades > 0 ? data.win_rate.toFixed(1) + '%' : '—';
+    document.getElementById('totalTrades').textContent = data.total_trades;
+    document.getElementById('todayPnl').textContent = '$' + netPnl.toFixed(2);
+    document.getElementById('drawdown').textContent = data.drawdown_pct.toFixed(1) + '%';
+    document.getElementById('profitFactor').textContent = data.profit_factor > 0 ? data.profit_factor.toFixed(2) : '—';
+  } catch(e) {}
+}
 
-  document.getElementById('equity').textContent = '$' + lastEquity.toLocaleString(undefined, {minimumFractionDigits:0});
-  document.getElementById('netPnl').textContent = '$' + totalPnl.toFixed(2);
-  document.getElementById('netPnl').className = 'value ' + (totalPnl >= 0 ? 'profit' : 'loss');
-  document.getElementById('winRate').textContent = completed.length > 0 ? (wins.length/completed.length*100).toFixed(1) + '%' : '—';
-  document.getElementById('totalTrades').textContent = completed.length;
-  document.getElementById('avgDur').textContent = completed.length > 0 ? (completed.reduce((a,s) => a + parseFloat(s.duration || 0), 0) / completed.length).toFixed(1) + 'h' : '—';
-
-  const grossWin = wins.reduce((a,s) => a + s.pnl, 0);
-  const grossLoss = Math.abs(losses.reduce((a,s) => a + s.pnl, 0));
-  document.getElementById('profitFactor').textContent = grossLoss > 0 ? (grossWin/grossLoss).toFixed(2) : '—';
+async function fetchSignals() {
+  try {
+    const r = await fetch(API_BASE + '/api/signals');
+    signals = await r.json();
+    renderFeed();
+  } catch(e) {}
 }
 
 function renderSignal(sig, index) {
@@ -416,7 +422,7 @@ function renderSignal(sig, index) {
     resultHtml = `<div class="result-badge pending">&#9679; LIVE — PENDING</div>`;
   } else if (sig.pnl > 0) {
     resultHtml = `<div class="result-badge win">&#10003; ${sig.result} | +$${sig.pnl.toFixed(2)} (+${sig.rMultiple.toFixed(1)}R) | ${sig.duration}</div>`;
-  } else {
+  } else if (sig.pnl !== null) {
     resultHtml = `<div class="result-badge loss">&#10007; ${sig.result} | $${sig.pnl.toFixed(2)} (${sig.rMultiple.toFixed(1)}R) | ${sig.duration}</div>`;
   }
 
@@ -451,20 +457,25 @@ function renderSignal(sig, index) {
   </div>`;
 }
 
-function renderDashboard() {
+function renderFeed() {
   const feed = document.getElementById('signalFeed');
   if (signals.length === 0) {
     feed.innerHTML = `<div class="signal-card" style="text-align:center; padding:60px;">
       <div style="color:var(--text-dim); font-size:0.9em;">Waiting for signals...</div>
-      <div style="color:var(--cyan); font-size:0.7em; margin-top:10px;">The bot scans every 5 minutes during London+NY session (07:00-20:00 UTC)</div>
+      <div style="color:var(--cyan); font-size:0.7em; margin-top:10px;">Scanning every 5 min during 07:00-20:00 UTC</div>
     </div>`;
   } else {
-    feed.innerHTML = signals.map((s, i) => renderSignal(s, i)).join('');
+    feed.innerHTML = signals.slice().reverse().map((s, i) => renderSignal(s, i)).join('');
   }
-  renderStats(signals);
 }
 
-renderDashboard();
+// Poll every 10 seconds
+async function poll() {
+  await fetchState();
+  await fetchSignals();
+}
+poll();
+setInterval(poll, 10000);
 </script>
 </body>
 </html>
