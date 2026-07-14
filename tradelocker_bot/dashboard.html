@@ -380,43 +380,12 @@ body::after {
   </div>
 
   <!-- Signal Feed -->
-  <div class="signal-feed" id="signalFeed">
-    <!-- Signals injected here by JS -->
-    <div class="signal-card" style="text-align:center; padding:60px;">
-      <div style="color:var(--text-dim); font-size:0.9em;">Waiting for signals...</div>
-      <div style="color:var(--cyan); font-size:0.7em; margin-top:10px;">The bot scans every 5 minutes during London+NY session (07:00-20:00 UTC)</div>
-    </div>
-  </div>
+  <div class="signal-feed" id="signalFeed"></div>
 </div>
 
 <script>
-// Demo data: inject signals to show the dashboard in action
-const demoSignals = [
-  {
-    direction: "BUY", time: "2026-01-09 17:05 UTC", entry: 4516.40,
-    sl: 4505.32, tp: 4533.02, slDist: 11.08, tpDist: 16.62,
-    rr: "1:1.5", lots: 0.11, risk: 121.85, riskPct: 2.5,
-    confidence: 80, atr: 3.16, equity: 5000.00,
-    reason: "EMA5 crossed above EMA21 (momentum shift bullish), RSI confirms above 45, 1H trend aligned UP | Price above EMA50 (strong structure)",
-    result: "TP", pnl: 258.67, rMultiple: 1.5, duration: "1.3h"
-  },
-  {
-    direction: "SELL", time: "2026-01-15 14:20 UTC", entry: 4591.60,
-    sl: 4612.53, tp: 4560.20, slDist: 20.93, tpDist: 31.40,
-    rr: "1:1.5", lots: 0.06, risk: 125.58, riskPct: 2.5,
-    confidence: 70, atr: 5.98, equity: 5258.67,
-    reason: "RSI dropped through 50 from above (momentum collapse), price below EMA21, 1H downtrend | Price below EMA50 (strong structure)",
-    result: "TP", pnl: 188.40, rMultiple: 1.5, duration: "2.8h"
-  },
-  {
-    direction: "BUY", time: "2026-01-20 08:10 UTC", entry: 4721.40,
-    sl: 4700.47, tp: 4752.80, slDist: 20.93, tpDist: 31.40,
-    rr: "1:1.5", lots: 0.06, risk: 136.17, riskPct: 2.5,
-    confidence: 75, atr: 5.98, equity: 5447.07,
-    reason: "MACD histogram flipped positive (buying pressure resuming), EMA stack bullish, 1H uptrend",
-    result: "PENDING", pnl: null, rMultiple: null, duration: null
-  }
-];
+// Signal data — populated by live bot or empty on fresh start
+const signals = [];
 
 function renderStats(signals) {
   const completed = signals.filter(s => s.result !== "PENDING");
@@ -430,7 +399,7 @@ function renderStats(signals) {
   document.getElementById('netPnl').className = 'value ' + (totalPnl >= 0 ? 'profit' : 'loss');
   document.getElementById('winRate').textContent = completed.length > 0 ? (wins.length/completed.length*100).toFixed(1) + '%' : '—';
   document.getElementById('totalTrades').textContent = completed.length;
-  document.getElementById('avgDur').textContent = completed.length > 0 ? (completed.reduce((a,s) => a + parseFloat(s.duration), 0) / completed.length).toFixed(1) + 'h' : '—';
+  document.getElementById('avgDur').textContent = completed.length > 0 ? (completed.reduce((a,s) => a + parseFloat(s.duration || 0), 0) / completed.length).toFixed(1) + 'h' : '—';
 
   const grossWin = wins.reduce((a,s) => a + s.pnl, 0);
   const grossLoss = Math.abs(losses.reduce((a,s) => a + s.pnl, 0));
@@ -484,8 +453,15 @@ function renderSignal(sig, index) {
 
 function renderDashboard() {
   const feed = document.getElementById('signalFeed');
-  feed.innerHTML = demoSignals.map((s, i) => renderSignal(s, i)).join('');
-  renderStats(demoSignals);
+  if (signals.length === 0) {
+    feed.innerHTML = `<div class="signal-card" style="text-align:center; padding:60px;">
+      <div style="color:var(--text-dim); font-size:0.9em;">Waiting for signals...</div>
+      <div style="color:var(--cyan); font-size:0.7em; margin-top:10px;">The bot scans every 5 minutes during London+NY session (07:00-20:00 UTC)</div>
+    </div>`;
+  } else {
+    feed.innerHTML = signals.map((s, i) => renderSignal(s, i)).join('');
+  }
+  renderStats(signals);
 }
 
 renderDashboard();
