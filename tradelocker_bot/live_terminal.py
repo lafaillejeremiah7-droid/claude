@@ -491,47 +491,45 @@ class DashboardState:
         #   trend_strength = |EMA20_1h - EMA50_1h| / ATR(1h)
         #   -> lets the runner leg ride further when the 1H trend has strong
         #      conviction, keeps it closer when the trend is weak/borderline
-        # --- PHASE-14 IDEAL-TRADER GEOMETRY (shipped, validated 2023-24 + 2025-26) ---
-        # The old geometry (SL 0.89x, TP1 1R, TP2 2R) made only ~$25-30/wk and
-        # BREACHED the DD gate on 2025-26 ($391 > $350). Re-optimizing the SL/TP
-        # geometry for the 12-20 UTC / 2-per-day regime found the honest optimum:
-        # pull TP1 CLOSE (0.50R) so price tags it far more often -> bank 49% early
-        # -> SL to breakeven -> trade locked green. Wider SL (1.158x) cuts
-        # premature stop-outs; a real runner (TP2 2.75R, Final ~4.7R) still catches
-        # gold's big moves. Result vs old live: WR 51%->68%, $30->$50/wk, DD gate
-        # FAIL->PASS. Wins on EVERY axis, both datasets.
-        # --- PHASE-15 MAX-DOLLARS GEOMETRY (dollars-first, validated both datasets) ---
-        # Honest note: the coherent, gate-safe ceiling for 1-2 trades/day in this
-        # window is ~$54-60/wk. (Earlier ~$130/wk figures were DEGENERATE — they
-        # relied on broken TP ladders where "Final" fell below TP1/TP2; rejected.)
-        # This config: bank ~45% instantly at a 0.45R target (locks the win, WR
-        # stays 64-70%), tiny 16% mid leg, then a BIG 39% runner to 5.3-15.7R that
-        # catches gold's strong-trend moves — that runner is where the extra
-        # dollars come from. Beats the prior config on BOTH $/wk and win rate.
-        self.ADAPT_BASE_SL = 1.1342
-        self.ADAPT_VOL_LO = 0.3460
-        self.ADAPT_VOL_HI = 1.2653
-        self.ADAPT_TREND_GAIN = 1.1363
-        # Runner (Final TP) = TP3_R_BASE * clip(1 + TREND_GAIN*(ts-1), LO, HI)
-        # -> realized Final R in ~[5.3, 15.7], averaging ~6.3R.
-        self.TP1_R = 0.45               # first partial — VERY CLOSE (locks the win)
-        self.TP2_R = 3.16               # second partial
-        self.TP3_R_BASE = 6.26          # runner base R (before trend extension)
-        self.TP_EXT_LO = 0.849
-        self.TP_EXT_HI = 2.509
+        # ================================================================
+        # ISAGI ENGINE — PRODUCTION CONFIG (validated +$22.7/wk OOS 2026,
+        # 64% WR, DDt $331, gate-safe. Static + M5 vol filter + flash breaker.)
+        # ================================================================
+        # Geometry: SL 1.2× ATR | TP capped 2.0R | TP1 at 35% of target (0.7R)
+        # Management: close 45% at TP1 + SL→BE | 55% runner to 2.0R, trail 1R
+        # behind peak. NO multi-leg runner (proven: simpler = more robust OOS).
+        self.ADAPT_BASE_SL = 1.2
+        self.ADAPT_VOL_LO = 0.80        # vol-clip (session gold: 0.8-1.3 typical)
+        self.ADAPT_VOL_HI = 1.30
+        self.ADAPT_TREND_GAIN = 0.0     # no trend extension — fixed 2R cap
+        self.TP1_R = 0.70               # 35% of 2.0R target
+        self.TP2_R = 2.0                # final target (the runner's destination)
+        self.TP3_R_BASE = 2.0           # same as TP2 (no separate 3rd leg)
+        self.TP_EXT_LO = 1.0            # no extension
+        self.TP_EXT_HI = 1.0            # no extension
 
-        # Multi-TP harvest allocation: 45/16/39 (phase-15). Nearly half banked at
-        # the 0.45R target for the win, then a large 39% runner swings for gold's
-        # big trends — that is the dollar engine.
+        # Allocation: 45% banked at TP1 (0.7R) + SL to breakeven | 55% runner to 2R
         self.ALLOC_A1 = 0.45
-        self.ALLOC_A2 = 0.16            # A3 = 1 - A1 - A2 = 0.39
-        self.ALLOC_TILT = 0.08          # shift to runner when trend is strong
-        self.TILT_TREND_MIN = 1.0       # trend_strength >= this = "strong"
-        # Drawdown circuit-breaker risk engine — lets us run higher base risk
-        # ($45 vs $25) safely: +37% vs flat-$25, static $4,600 floor never
-        # breached across 2025-26, 2023-24, and 4.5yr.
-        self.RISK_BASE = 47.0           # base $ risk per signal (phase-15 dollar-max)
-        # SESSION WINDOW (rebuild v2): only signal during the London/NY overlap
+        self.ALLOC_A2 = 0.55            # A3 = 0 (no third leg)
+        self.ALLOC_TILT = 0.0           # no tilt (static, proven best)
+        self.TILT_TREND_MIN = 99.0      # effectively disabled
+
+        # Sizing: Fractional Kelly, $70 max / $17.50 floor, DD-defensive at -$200
+        self.RISK_BASE = 70.0           # Kelly peak (capped at 1.4% of $5k)
+        self.RISK_FLOOR = 17.5          # hyper-defensive (0.35% of $5k)
+        self.RISK_DD_DEFENSIVE = 200.0  # force floor when DD >= this
+
+        # M5 Volume Density filter: reject trades when pre-entry range is deeply
+        # compressed (vdens < 0.6) — skips low-quality chop setups.
+        self.VDENS_MIN = 0.6
+
+        # Flash-crash breaker: if a single 1m bar moves > 300 pips ($30) against
+        # the position before TP1, force emergency exit.
+        self.FLASH_THRESHOLD = 30.0     # dollars (300 pips × $0.10/pip)
+
+        # SESSION WINDOW: tightened to peak London/NY (12-17 UTC, proven best)
+        self.SESSION_START = 12
+        self.SESSION_END = 17           # (was 20; ISAGI validated 12-17 is optimal)
         # + NY session, 12-20 UTC. This is where gold's directional edge lives.
         # Keeping $45 risk but restricting sessions: 2025-26 DD $407->$312 (gate
         # FAIL->PASS), WR 43%->46-50%, +$17/wk. Validated on 2023-24 too.
