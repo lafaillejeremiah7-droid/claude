@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Create the HERCULES backtest script (hercules_backtest.py) that runs HERCULES against both datasets (2023-24 and 2025-26) with full friction, walk-forward simulation, circuit-breaker, and produces an honest head-to-head comparison against the current HIGH-CONF baseline ($52-56/wk, 70-73% WR). Uses the existing data loading infrastructure (fb.load_data(), T.load_data(), P12.prep()) and the validated sim() framework from phase19_upgrade.py.",
+  "status": "pending",
+  "steps": [
+    "Create /projects/sandbox/claude/tradelocker_bot/hercules_backtest.py",
+    "Import existing infrastructure: phase12_ideal.prep, fullyear_backtest.load_data, tsai_optimize.load_data, phase19_upgrade (outcomes, sim, BASE params), phase21_intermarket (load_macro, align_features, logistic_fit, logistic_pred), phase22_pathshape (expanded_features, path_features), hercules_v2 (HerculesEngine)",
+    "Load both datasets via P12.prep(fb.load_data()) and P12.prep(T.load_data()). Load macro data via P21.load_macro().",
+    "Implement hercules_sim() function that runs HERCULES walk-forward on a prepared dataset: iterate through signals in chronological order, at each signal run the HerculesEngine.generate_signal() with the available bar data and macro state. Apply friction (commission $7*lots + 1-2 tick slippage on entry+TP1), session filter (12-20 UTC), max 2/day, 60-min cooldown, $400 DD gate, $250 daily DD gate, $85 max loss per trade, circuit-breaker (35% risk reduction when DD >= $200). Track equity curve, compute: $/wk, WR%, DDt, DDD, gate pass/fail, signals per day.",
+    "The key integration point: HERCULES must work with the same candidate/signal structure as the existing sim(). The H/L/C forward windows (200 bars) are used for outcome simulation. HERCULES decides WHICH signals to take (via its 9-phase pipeline acting as a regime_mask), and the outcomes() function from phase19_upgrade computes the actual trade results with the validated SL/TP geometry.",
+    "Run the baseline comparison: (1) Current HIGH-CONF brain (phase23 nonlinear logistic, conf >= 60th percentile, $65 risk) on both datasets. (2) HERCULES on both datasets. Print side-by-side table.",
+    "Implement honest reporting: print exact numbers for both systems on both datasets. If HERCULES loses, say so clearly. Include: $/wk, WR%, total trades, DDt, DDD, gate pass/fail, signals/day, profit factor.",
+    "At the end, print a clear VERDICT: 'HERCULES BEATS BASELINE' or 'HERCULES DOES NOT BEAT BASELINE' with the delta in $/wk.",
+    "If HERCULES beats baseline: save the model state and parameters needed for live integration to hercules_model.json"
+  ],
+  "acceptance_criteria": [
+    "python3 hercules_backtest.py runs to completion without error on both datasets",
+    "Output includes clear head-to-head comparison table with $/wk, WR%, DDt, DDD for both systems on both datasets",
+    "Output includes honest VERDICT line stating whether HERCULES beats or does not beat the baseline",
+    "Friction is properly applied ($7*lots commission + 1-2 tick slippage)",
+    "Gate validation is applied ($400 total DD, $250 daily DD)",
+    "Uses the existing P12.prep() / sim() / outcomes() infrastructure for fair comparison"
+  ],
+  "verification": [
+    "cd /projects/sandbox/claude/tradelocker_bot && python3 hercules_backtest.py 2>&1 | tail -30"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

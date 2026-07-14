@@ -1,0 +1,33 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Implement the complete HERCULES v2 module (hercules_v2.py) with all 9 phases as a single Python file in /projects/sandbox/claude/tradelocker_bot/. This module implements the Adaptive World Model Decision Engine: Phase 1 (market state estimation from multi-TF OHLC + macro), Phase 2 (objective probability inference using softmax over 10 objectives), Phase 3 (future path simulation), Phase 4 (EV optimization), Phase 5 (historical validation via validated nonlinear logistic model), Phase 6 (Bayesian objective updating), Phase 7 (execution quality estimation), Phase 8 (final decision with weighted scoring), Phase 9 (continuous learning/retraining).",
+  "status": "pending",
+  "steps": [
+    "Create /projects/sandbox/claude/tradelocker_bot/hercules_v2.py with all imports (numpy, pandas only - no sklearn/torch)",
+    "PHASE 1 - WorldModel class: build_state() method that computes at every 5m candle: higher-TF trends (1h EMA20/50), trend_strength (EMA separation / ATR), market structure (recent swing H/L), volatility (ATR + vol_ratio = ATR/50-bar avg ATR), momentum (RSI, rate of change), FVGs (gaps in candle bodies), order blocks (strong candles before reversal), prev day H/L, session H/L, current session (Asian/London/NY), real yields change, DXY change, spread proxy, volume proxy (range as proxy for 2025-26 data), ATR, EMA structure, RSI. Input: bars_5m, bars_15m, bars_1h lists of (ts,o,h,l,c) + macro data. Output: state dict with all features.",
+    "PHASE 2 - ObjectiveInference class: infer_objectives(state) method. Defines 10 market objectives (continuation, pullback_completion, liquidity_sweep, liquidity_rejection, structure_break, trend_reversal, vol_expansion, vol_compression, mean_reversion, regime_transition). For each, compute a raw score from state features using domain-specific heuristics (e.g., continuation high when trend strong + momentum aligned + no exhaustion; pullback_completion high when in pullback zone + trend intact; etc.). Apply softmax to get probabilities summing to 1. Return dict of objective->probability.",
+    "PHASE 3 - PathSimulator class: simulate_paths(state, objectives) method. For each high-probability objective (top 3), generate candidate trade entries: direction (from objective), entry price, stop level (ATR-based adaptive SL from validated params base_sl=1.1342), target levels (using validated TP geometry: TP1=0.45R, TP2=3.16R, Final=6.26R * trend_ext), time horizon (MAX_HOLD=200 bars), estimated P(success) from objective probability. Return list of CandidateTrade objects.",
+    "PHASE 4 - EVOptimizer class: optimize_candidates(candidates) method. For each candidate: EV = P(win)*R_win - (1-P(win))*R_loss - friction_cost. Friction = $7*lots commission + 1-2 tick slippage. Discard candidates where EV <= 0. Return sorted list of positive-EV candidates.",
+    "PHASE 5 - HistoricalValidator class: validate(candidates, brain_weights, feat_mean, feat_std) method. For each remaining candidate, construct the 19-feature vector (path shape 5 + macro 6 + intrinsic 5 + interactions 3) from the current state, apply the validated nonlinear expansion (squared terms + top-5 interactions), run through the logistic model (weights from brain_model.json), output calibrated P(success). Load brain_model.json at init to get weights/threshold.",
+    "PHASE 6 - BayesianUpdater class: update_objectives(prior_objectives, new_candle_data) method. After each new candle, compute likelihood of observing that candle given each objective hypothesis. Apply Bayes rule: posterior = prior * likelihood / evidence. Normalize to sum to 1. If primary objective changes, flag for re-evaluation.",
+    "PHASE 7 - ExecutionQuality class: assess(candidate, state) method. Estimate P(execution without material EV degradation) based on: spread/SL ratio (higher = worse), current volatility vs average (high vol = more slippage), distance to stop (tight = risky), distance to target (far + high vol = uncertain). Return execution_quality score 0-1.",
+    "PHASE 8 - FinalDecision class: decide(candidates) method. For each candidate: FinalScore = 0.55*historical_edge + 0.30*intent_alignment + 0.15*execution_quality. Enter only if: EV > 0, historical_edge >= threshold (from brain_model.json), FinalScore >= 0.55, risk within daily limits ($85 max loss, $400 total DD gate, $250 daily DD gate), no higher-ranked candidate exists, session is 12-20 UTC, max 2/day, 60-min cooldown respected. Return the top signal or None.",
+    "PHASE 9 - ContinuousLearner class: on_trade_closed(trade_result) method. Store in rolling window. Every 50 trades, check if retraining logistic model on recent data improves calibration + AUC. Only promote new model if all metrics improve AND max DD doesn't worsen materially. Store model state in memory (list of recent trades).",
+    "Top-level HerculesEngine class: wraps all 9 phases. generate_signal(bars_5m, bars_15m, bars_1h, macro_data, current_price) -> Signal or None. This is the public API that live_terminal.py will call. Also expose process_candle(new_candle) for Bayesian updates and on_trade_closed(result) for learning.",
+    "Ensure all helper functions (EMA, ATR, RSI, logistic_pred) are self-contained within the module or imported from existing modules (phase21_intermarket, phase22_pathshape). Volume proxy for 2025-26: use candle range (h-l) as proxy since no Volume column exists."
+  ],
+  "acceptance_criteria": [
+    "python3 -c 'from hercules_v2 import HerculesEngine; e = HerculesEngine(); print(\"loaded\")' runs without error",
+    "The module contains implementations of all 9 phases as described",
+    "No sklearn/torch imports - only numpy/pandas",
+    "Handles both 2023-24 data (with Volume) and 2025-26 data (without Volume) via range proxy",
+    "Uses validated parameters: base_sl=1.1342, TP1=0.45R, TP2=3.16R, Final=6.26R, trend_gain=1.1363, session 12-20 UTC, max 2/day, 60-min cooldown"
+  ],
+  "verification": [
+    "cd /projects/sandbox/claude/tradelocker_bot && python3 -c 'from hercules_v2 import HerculesEngine; e = HerculesEngine(); print(\"All 9 phases loaded OK\")'",
+    "cd /projects/sandbox/claude/tradelocker_bot && python3 -c 'import hercules_v2; print(dir(hercules_v2))' to confirm all classes exist"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

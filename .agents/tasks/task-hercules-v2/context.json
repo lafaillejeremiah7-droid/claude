@@ -1,0 +1,32 @@
+{
+  "project_type": "Python XAU/USD trading signal bot with vectorized backtesting",
+  "language": "Python 3",
+  "build_system": "None (direct Python scripts)",
+  "test_framework": "No formal test framework. Validation via backtesting scripts that run sim() on real data. Results are compared against a validated baseline ($52-56/wk, 70-73% WR).",
+  "build_command": "python3 -c 'import hercules_v2; print(\"OK\")'",
+  "test_command": "python3 hercules_backtest.py",
+  "verification_instructions": "1. python3 -c 'import hercules_v2' (module loads without error). 2. python3 hercules_backtest.py (runs full backtest on both datasets, prints head-to-head comparison). 3. Confirm DDt < $400 and DDD < $250 on both datasets (AquaFunded gate-safe). 4. Compare $/wk and WR against baseline.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "cd /projects/sandbox/claude/tradelocker_bot && python3 -c 'import numpy, pandas; print(\"ready\")'. No pip install needed - numpy and pandas are pre-installed. No sklearn/torch available.",
+  "environment_constraints": "No sklearn, no torch, no scipy. Must use numpy/pandas only for all ML/statistics. 2025-26 data has NO volume column (only dt,o,h,l,c). 2023-24 data has Volume but different format (Date,Time,Open,High,Low,Close,Volume). Both datasets are loaded via existing fb.load_data() and T.load_data() functions.",
+  "contribution_requirements": "Push results via github power (owner lafaillejeremiah7-droid, repo claude, branch main). If HERCULES beats baseline, wire into live_terminal.py.",
+  "key_patterns": "1. Data loading: fb.load_data() returns 2023-24 df, T.load_data() returns 2025-26 df (pre-indexed). 2. Candidate building: T.build_candidates(df) or P12.prep(fb.load_data()) returns dict with keys dt,d,entries,x_atr,vol_ratio,trend_strength,atr5,rsi,pb_dist,hours,H,L,C,n,order,day_codes. H/L/C are (n_signals, 200) forward windows. 3. Sim function: U.sim(S, friction=True, ...) runs walk-forward with friction, circuit-breaker, regime_mask. Returns dict(wk, wr, ddt, ddd, gate, sig_d, taken). 4. Outcomes: U.outcomes(c, tp1_r, trend_gain) returns sld, r, mfe_r, full_stop, tp1_hit vectors. 5. Brain: P21.logistic_fit/logistic_pred for ridge logistic, P22.expanded_features for 19-feature vector, nonlinear expansion via squared+interactions (phase23 pattern). 6. live_terminal.py imports from modules.xauusd_aswp_engine and uses DashboardState.check_and_signal() loop.",
+  "relevant_files": [
+    "tradelocker_bot/phase19_upgrade.py",
+    "tradelocker_bot/phase21_intermarket.py",
+    "tradelocker_bot/phase22_pathshape.py",
+    "tradelocker_bot/phase23_stronger_brain.py",
+    "tradelocker_bot/phase12_ideal.py",
+    "tradelocker_bot/tsai_optimize.py",
+    "tradelocker_bot/fullyear_backtest.py",
+    "tradelocker_bot/adaptive_backtest.py",
+    "tradelocker_bot/modules/xauusd_aswp_engine.py",
+    "tradelocker_bot/live_terminal.py",
+    "tradelocker_bot/brain_model.json",
+    "tradelocker_bot/data/xau_train.parquet",
+    "tradelocker_bot/data/xau_2025_2026.parquet",
+    "tradelocker_bot/data/real_yield_daily.parquet",
+    "tradelocker_bot/data/dxy_daily.parquet"
+  ],
+  "directory_structure": "Root: /projects/sandbox/claude/tradelocker_bot/. data/ has parquet files. modules/ has xauusd_aswp_engine.py. Dashboard at dashboard/frontend/. Main scripts at root level (phase*.py, *_backtest.py, live_terminal.py)."
+}
