@@ -50,14 +50,13 @@ def rsi_calc(series, period=14):
 
 
 # ===================== CONFIGURATION =====================
-# VALIDATED on NAS100 15m data, Jan-Jun 2026 (CONSISTENT on both halves:
-# train $94/trade, test $101/trade — 4.1x the previous config).
-# Tight stop + huge target = catches real momentum moves.
+# VALIDATED on NAS100 15m data, Jan-Jun 2026.
+# DD caps ON (5% daily, 10% total, adaptive risk ladder).
 
 TIMEFRAME = "15min"  # entry timeframe
 BAR_MINUTES = 15     # minutes per bar
-SL_MULT = 0.75       # Stop loss = 0.75x ATR(14) — tight, gets out fast if wrong
-TP_RATIO = 4.0       # Take profit = 4.0x the stop distance (let winners RUN)
+SL_MULT = 2.25       # Stop loss = 2.25x ATR(14) from entry
+TP_RATIO = 5.0       # Take profit = 5.0x the stop distance (let winners run)
 COOLDOWN = 6         # Minimum 6 bars (90 min) between trades
 MAX_PER_DAY = 2      # Maximum 2 trades per day
 MAX_HOLD = 24        # Maximum hold = 24 bars (6 hours)
@@ -238,12 +237,24 @@ def backtest(df, signals, start_balance=5000.0, print_signals=True):
         if trades_today.get(day_key, 0) >= MAX_PER_DAY:
             continue
 
-        # No DD caps — full conviction, always trade when signals fire
+        # Daily DD check (5% of current equity)
+        if daily_pnl.get(day_key, 0) <= -(0.05 * equity):
+            continue
 
-        # Adaptive risk ladder — no DD caps (user's live/funded account has no max DD).
-        # Risk stays at RISK_PCT (2.5%) at all times for maximum compounding.
+        # Total DD HARD HALT (10% from peak)
+        if equity <= peak_eq * 0.90:
+            continue
+
+        # Adaptive risk ladder — protect DD caps
         dd_pct = (peak_eq - equity) / peak_eq if peak_eq > 0 else 0
-        eff_risk = RISK_PCT  # always full conviction — no DD gates
+        if dd_pct >= 0.085:
+            continue  # hard halt near 10% cap
+        elif dd_pct >= 0.06:
+            eff_risk = 0.012
+        elif dd_pct >= 0.035:
+            eff_risk = 0.018
+        else:
+            eff_risk = RISK_PCT  # full 2.5%
 
         risk_dollars = equity * eff_risk
         atr_val = sig['atr']

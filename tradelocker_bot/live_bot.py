@@ -235,9 +235,16 @@ def build_trade_signal(sig):
     sl_dist = SL_MULT * atr_val
     tp_dist = TP_RATIO * sl_dist
 
-    # No DD caps — full conviction, always trade (user has no max DD constraint)
+    # Adaptive risk with DD caps
     dd_pct = (state.peak_equity - state.equity) / state.peak_equity if state.peak_equity > 0 else 0
-    eff_risk = RISK_PCT  # always 2.5%
+    if dd_pct >= 0.085:
+        return None  # halt near 10% cap
+    elif dd_pct >= 0.06:
+        eff_risk = 0.012
+    elif dd_pct >= 0.035:
+        eff_risk = 0.018
+    else:
+        eff_risk = RISK_PCT
 
     risk_dollars = state.equity * eff_risk
 
@@ -402,8 +409,15 @@ async def scan_loop():
 
             # --- LOOK FOR NEW SIGNAL (only if no open trade) ---
             elif SESSION_START <= now.hour <= SESSION_END:
-                # No DD caps — always look for signals during session
-                if state.trades_today.get(day_key, 0) >= MAX_PER_DAY:
+                # Daily DD check
+                today_loss = state.daily_pnl.get(day_key, 0.0)
+                if today_loss <= -(0.05 * state.equity):
+                    pass  # halted for the day
+                # Total DD check
+                elif (state.peak_equity - state.equity) / state.peak_equity >= 0.085:
+                    pass  # halted near 10% cap
+                # Max trades/day check
+                elif state.trades_today.get(day_key, 0) >= MAX_PER_DAY:
                     pass  # already traded max today
                 else:
                     bars = await fetch_5m_bars()
