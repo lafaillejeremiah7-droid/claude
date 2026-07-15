@@ -60,6 +60,8 @@ class BotState:
             "peak_equity": self.peak_equity,
             "signals_history": self.signals_history[-100:],
             "open_trade": self.open_trade,
+            "daily_pnl": self.daily_pnl,
+            "trades_today": self.trades_today,
         }
         Path("bot_state.json").write_text(json.dumps(data, default=str, indent=2))
 
@@ -71,6 +73,8 @@ class BotState:
                 self.peak_equity = data.get("peak_equity", STARTING_BALANCE)
                 self.signals_history = data.get("signals_history", [])
                 self.open_trade = data.get("open_trade", None)
+                self.daily_pnl = data.get("daily_pnl", {})
+                self.trades_today = data.get("trades_today", {})
                 print(f"State loaded: equity=${self.equity:.2f}, {len(self.signals_history)} signals")
             except:
                 pass
@@ -253,6 +257,7 @@ def build_trade_signal(sig):
 
     return {
         "time": sig['time'],
+        "entry_ts": datetime.now(timezone.utc).isoformat(),  # for timeout tracking
         "direction": sig['direction'],
         "entry": round(entry_price, 2),
         "sl": round(sl, 2),
@@ -304,43 +309,137 @@ async def send_signal_telegram(trade):
 # ===================== MAIN SCAN LOOP =====================
 
 async def scan_loop():
-    """Main loop: every 5 min, fetch bars, compute features, check for signal."""
+    """Main loop: every 5 min, fetch bars, compute features, check for signal.
+    Enforces ALL strategy rules identically to the backtest:
+      - Session filter (07:00-20:00 UTC)
+      - Cooldown between trades (30 min)
+      - Max 2 trades per day
+      - Daily DD halt (5% of equity)
+      - Total DD halt (10% from peak)
+      - Adaptive risk scaling
+      - Trade timeout (MAX_HOLD * 5 min = 5 hours)
+    """
     state.running = True
     print(f"Scan loop started. Checking every {SCAN_INTERVAL}s during session {SESSION_START}:00-{SESSION_END}:00 UTC")
+    print(f"Strategy: SL={SL_MULT}x ATR | TP={TP_RATIO}:1 | Max {MAX_PER_DAY}/day | Timeout {MAX_HOLD*5/60:.1f}h")
 
     while state.running:
         try:
             now = datetime.now(timezone.utc)
             state.last_scan = now.strftime("%Y-%m-%d %H:%M UTC")
+            day_key = str(now.date())
 
-            # Only scan during session hours
-            if SESSION_START <= now.hour <= SESSION_END:
+            # Reset daily counters at the start of each new day
+            if day_key not in state.trades_today:
+                state.trades_today = {day_key: 0}
+                state.daily_pnl = {day_key: 0.0}
+
+            # --- CHECK OPEN TRADE FIRST (timeout + SL/TP) ---
+            if state.open_trade is not None:
                 bars = await fetch_5m_bars()
-                if bars is not None and len(bars) > 60:
-                    state.bars_5m = bars
+                if bars is not None and len(bars) > 0:
                     state.price = float(bars['Close'].iloc[-1])
 
-                    # Check if we already have an open trade (skip if so)
-                    if state.open_trade is None:
+                t = state.open_trade
+                hit = None
+                pnl = 0.0
+                r_mult = 0.0
+
+                # 1) Check timeout (MAX_HOLD bars = 5 hours)
+                try:
+                    entry_dt = datetime.fromisoformat(t['entry_ts'])
+                    elapsed_min = (now - entry_dt).total_seconds() / 60
+                    if elapsed_min >= MAX_HOLD * 5:
+                        # Timeout: close at current price
+                        if t['direction'] == 'BUY':
+                            pnl = (state.price - t['entry']) * t['lots'] * 100.0
+                        else:
+                            pnl = (t['entry'] - state.price) * t['lots'] * 100.0
+                        r_mult = pnl / t['risk'] if t['risk'] > 0 else 0
+                        hit = 'TIMEOUT'
+                except:
+                    pass
+
+                # 2) Check SL/TP hit (only if not already timed out)
+                if hit is None and state.price > 0:
+                    if t['direction'] == 'BUY':
+                        if state.price <= t['sl']:
+                            hit = 'SL'
+                            pnl = -(t['lots'] * t['sl_dist'] * 100.0)
+                            r_mult = -1.0
+                        elif state.price >= t['tp']:
+                            hit = 'TP'
+                            pnl = t['lots'] * t['tp_dist'] * 100.0
+                            r_mult = TP_RATIO
+                    else:
+                        if state.price >= t['sl']:
+                            hit = 'SL'
+                            pnl = -(t['lots'] * t['sl_dist'] * 100.0)
+                            r_mult = -1.0
+                        elif state.price <= t['tp']:
+                            hit = 'TP'
+                            pnl = t['lots'] * t['tp_dist'] * 100.0
+                            r_mult = TP_RATIO
+
+                # 3) If trade closed, update state
+                if hit:
+                    state.equity += pnl
+                    state.peak_equity = max(state.peak_equity, state.equity)
+                    state.daily_pnl[day_key] = state.daily_pnl.get(day_key, 0.0) + pnl
+                    try:
+                        entry_dt = datetime.fromisoformat(t['entry_ts'])
+                        dur_h = (now - entry_dt).total_seconds() / 3600
+                    except:
+                        dur_h = 0
+                    t['result'] = hit
+                    t['pnl'] = round(pnl, 2)
+                    t['rMultiple'] = round(r_mult, 1)
+                    t['duration'] = f"{dur_h:.1f}h"
+                    state.open_trade = None
+                    state.save_state()
+
+                    result_msg = (f"{'WIN' if pnl>0 else 'LOSS'} | {hit} | "
+                                  f"PnL ${pnl:+.2f} ({r_mult:+.1f}R) | "
+                                  f"Duration: {dur_h:.1f}h | Equity: ${state.equity:.2f}")
+                    print(f"  >> {result_msg}")
+                    await send_telegram(result_msg)
+
+            # --- LOOK FOR NEW SIGNAL (only if no open trade) ---
+            elif SESSION_START <= now.hour <= SESSION_END:
+                # Daily DD check: if today's losses >= 5% of current equity, halt for day
+                today_loss = state.daily_pnl.get(day_key, 0.0)
+                if today_loss <= -(0.05 * state.equity):
+                    pass  # halted for the day
+                # Total DD check: 10% from peak = hard halt
+                elif state.equity <= state.peak_equity * 0.90:
+                    pass  # halted completely
+                # Max trades/day check
+                elif state.trades_today.get(day_key, 0) >= MAX_PER_DAY:
+                    pass  # already traded max today
+                else:
+                    bars = await fetch_5m_bars()
+                    if bars is not None and len(bars) > 60:
+                        state.bars_5m = bars
+                        state.price = float(bars['Close'].iloc[-1])
+
                         feat = compute_features(bars)
                         if feat is not None:
                             sig = check_signal(feat)
                             if sig is not None:
-                                # Cooldown check
+                                # Cooldown check (COOLDOWN * 5 min = 30 min between signals)
+                                cooldown_ok = True
                                 if state.last_signal_time:
-                                    gap = (now - datetime.fromisoformat(
-                                        state.last_signal_time.replace(" UTC", "+00:00").replace(" ", "T")
-                                    )).total_seconds()
-                                    if gap < COOLDOWN * 300:
-                                        sig = None
+                                    try:
+                                        last_ts = state.last_signal_time.replace(" UTC", "")
+                                        last_dt = datetime.strptime(last_ts, "%Y-%m-%d %H:%M")
+                                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                                        gap_min = (now - last_dt).total_seconds() / 60
+                                        if gap_min < COOLDOWN * 5:
+                                            cooldown_ok = False
+                                    except:
+                                        pass  # if parsing fails, allow
 
-                                # Daily limit check
-                                day_key = str(now.date())
-                                state.trades_today[day_key] = state.trades_today.get(day_key, 0)
-                                if state.trades_today.get(day_key, 0) >= MAX_PER_DAY:
-                                    sig = None
-
-                                if sig is not None:
+                                if cooldown_ok:
                                     trade = build_trade_signal(sig)
                                     if trade is not None:
                                         state.open_trade = trade
@@ -348,40 +447,11 @@ async def scan_loop():
                                         state.last_signal_time = sig['time']
                                         state.trades_today[day_key] = state.trades_today.get(day_key, 0) + 1
                                         state.save_state()
-                                        print(f"\n  NEW SIGNAL: {trade['direction']} @ ${trade['entry']}")
+                                        print(f"\n  NEW SIGNAL: {trade['direction']} @ ${trade['entry']:.2f} "
+                                              f"| SL ${trade['sl']:.2f} | TP ${trade['tp']:.2f} "
+                                              f"| {trade['lots']} lots | Conf {trade['confidence']}")
+                                        print(f"  WHY: {trade['reason']}")
                                         await send_signal_telegram(trade)
-
-                    # Check open trade for SL/TP hit
-                    elif state.open_trade is not None and state.price > 0:
-                        t = state.open_trade
-                        hit = None
-                        if t['direction'] == 'BUY':
-                            if state.price <= t['sl']: hit = 'SL'
-                            elif state.price >= t['tp']: hit = 'TP'
-                        else:
-                            if state.price >= t['sl']: hit = 'SL'
-                            elif state.price <= t['tp']: hit = 'TP'
-
-                        if hit:
-                            if hit == 'TP':
-                                pnl = t['lots'] * t['tp_dist'] * 100.0
-                                r_mult = TP_RATIO
-                            else:
-                                pnl = -(t['lots'] * t['sl_dist'] * 100.0)
-                                r_mult = -1.0
-
-                            state.equity += pnl
-                            state.peak_equity = max(state.peak_equity, state.equity)
-                            t['result'] = hit
-                            t['pnl'] = round(pnl, 2)
-                            t['rMultiple'] = round(r_mult, 1)
-                            t['duration'] = "live"
-                            state.open_trade = None
-                            state.save_state()
-
-                            result_msg = f"{'WIN' if pnl>0 else 'LOSS'} | {hit} | PnL ${pnl:+.2f} ({r_mult:+.1f}R) | Equity: ${state.equity:.2f}"
-                            print(f"  >> {result_msg}")
-                            await send_telegram(result_msg)
 
         except Exception as e:
             print(f"Scan error: {e}")
