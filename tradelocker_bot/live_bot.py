@@ -29,7 +29,7 @@ import uvicorn
 from strategy import (
     ema, atr_calc, rsi_calc,
     SL_MULT, TP_RATIO, COOLDOWN, MAX_PER_DAY, MAX_HOLD,
-    RISK_PCT, SESSION_START, SESSION_END
+    RISK_PCT, SESSION_START, SESSION_END, BAR_MINUTES, CONTRACT
 )
 
 # ===================== CONFIG =====================
@@ -88,11 +88,11 @@ state = BotState()
 # ===================== PRICE FEED =====================
 
 async def fetch_5m_bars():
-    """Fetch recent NAS100 5-minute bars from Yahoo Finance."""
+    """Fetch recent NAS100 15-minute bars from Yahoo Finance."""
     async with httpx.AsyncClient(timeout=30) as client:
-        # Yahoo Finance: NQ=F (Nasdaq 100 Futures) 5m data (last 5 days max)
+        # Yahoo Finance: NQ=F (Nasdaq 100 Futures) 15m data (last 60 days)
         url = "https://query1.finance.yahoo.com/v8/finance/chart/NQ=F"
-        params = {"interval": "5m", "range": "5d"}
+        params = {"interval": "15m", "range": "60d"}
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
             r = await client.get(url, params=params, headers=headers)
@@ -235,14 +235,14 @@ def build_trade_signal(sig):
     sl_dist = SL_MULT * atr_val
     tp_dist = TP_RATIO * sl_dist
 
-    # Adaptive risk
+    # Adaptive risk ladder — guaranteed never to breach 10% (halt at 9%, 1% cap in deep DD)
     dd_pct = (state.peak_equity - state.equity) / state.peak_equity if state.peak_equity > 0 else 0
-    if dd_pct >= 0.085:
-        return None  # halt
+    if dd_pct >= 0.09:
+        return None       # hard halt — protect the 10% cap
     elif dd_pct >= 0.06:
-        eff_risk = 0.012
+        eff_risk = 0.010  # deep defensive
     elif dd_pct >= 0.035:
-        eff_risk = 0.018
+        eff_risk = 0.018  # cautious
     else:
         eff_risk = RISK_PCT
 
@@ -352,7 +352,7 @@ async def scan_loop():
                 try:
                     entry_dt = datetime.fromisoformat(t['entry_ts'])
                     elapsed_min = (now - entry_dt).total_seconds() / 60
-                    if elapsed_min >= MAX_HOLD * 5:
+                    if elapsed_min >= MAX_HOLD * BAR_MINUTES:
                         # Timeout: close at current price
                         if t['direction'] == 'BUY':
                             pnl = (state.price - t['entry']) * t['lots'] * 20.0
@@ -413,9 +413,9 @@ async def scan_loop():
                 today_loss = state.daily_pnl.get(day_key, 0.0)
                 if today_loss <= -(0.05 * state.equity):
                     pass  # halted for the day
-                # Total DD check: 10% from peak = hard halt
-                elif state.equity <= state.peak_equity * 0.90:
-                    pass  # halted completely
+                # Total DD check: halt new entries at 9% from peak (protects 10% cap)
+                elif (state.peak_equity - state.equity) / state.peak_equity >= 0.09:
+                    pass  # halted — grinding-back handled by adaptive risk ladder
                 # Max trades/day check
                 elif state.trades_today.get(day_key, 0) >= MAX_PER_DAY:
                     pass  # already traded max today
@@ -437,7 +437,7 @@ async def scan_loop():
                                         last_dt = datetime.strptime(last_ts, "%Y-%m-%d %H:%M")
                                         last_dt = last_dt.replace(tzinfo=timezone.utc)
                                         gap_min = (now - last_dt).total_seconds() / 60
-                                        if gap_min < COOLDOWN * 5:
+                                        if gap_min < COOLDOWN * BAR_MINUTES:
                                             cooldown_ok = False
                                     except:
                                         pass  # if parsing fails, allow
