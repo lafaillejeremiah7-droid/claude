@@ -282,7 +282,9 @@ def build_trade_signal(sig):
     }
 
 
-# ===================== TELEGRAM =====================
+# ===================== TELEGRAM (send + receive) =====================
+
+LAST_UPDATE_ID = 0
 
 async def send_telegram(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -290,6 +292,89 @@ async def send_telegram(text):
         try:
             await client.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
         except:
+            pass
+
+
+async def check_telegram_messages():
+    """Poll for incoming Telegram messages and respond."""
+    global LAST_UPDATE_ID
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+    async with httpx.AsyncClient(timeout=15) as client:
+        try:
+            params = {"offset": LAST_UPDATE_ID + 1, "timeout": 5}
+            r = await client.get(url, params=params)
+            if r.status_code != 200:
+                return
+            data = r.json()
+            if not data.get("ok"):
+                return
+            for update in data.get("result", []):
+                LAST_UPDATE_ID = update["update_id"]
+                msg = update.get("message", {})
+                text = msg.get("text", "").strip().lower()
+                chat_id = msg.get("chat", {}).get("id")
+                if str(chat_id) != TELEGRAM_CHAT_ID:
+                    continue
+
+                # Respond to commands
+                if text in ["/status", "status", "stats"]:
+                    wins = [s for s in state.signals_history if s.get('pnl') and s['pnl'] > 0]
+                    losses = [s for s in state.signals_history if s.get('pnl') and s['pnl'] <= 0]
+                    completed = wins + losses
+                    wr = len(wins)/len(completed)*100 if completed else 0
+                    reply = (
+                        f"VORTEX STATUS\n"
+                        f"Equity: ${state.equity:.2f}\n"
+                        f"P&L: ${state.equity - STARTING_BALANCE:+.2f}\n"
+                        f"Trades: {len(completed)} (W{len(wins)}/L{len(losses)})\n"
+                        f"Win Rate: {wr:.1f}%\n"
+                        f"Open: {'YES - ' + state.open_trade['direction'] + ' @ $' + str(state.open_trade['entry']) if state.open_trade else 'No'}\n"
+                        f"Last scan: {state.last_scan or 'not yet'}\n"
+                        f"Price: ${state.price:.2f}"
+                    )
+                    await send_telegram(reply)
+
+                elif text in ["/config", "config", "settings"]:
+                    reply = (
+                        f"VORTEX CONFIG\n"
+                        f"Instrument: NAS100\n"
+                        f"Timeframe: {TIMEFRAME}\n"
+                        f"Session: {SESSION_START}:00-{SESSION_END}:00 UTC\n"
+                        f"SL: {SL_MULT}x ATR | TP: {TP_RATIO}:1\n"
+                        f"Risk: {RISK_PCT*100}% per trade\n"
+                        f"Cooldown: {COOLDOWN} bars ({COOLDOWN*BAR_MINUTES}min)\n"
+                        f"Max: {MAX_PER_DAY}/day | Hold: {MAX_HOLD} bars ({MAX_HOLD*BAR_MINUTES/60:.1f}h)"
+                    )
+                    await send_telegram(reply)
+
+                elif text in ["/trade", "trade", "open trade", "current"]:
+                    if state.open_trade:
+                        t = state.open_trade
+                        reply = (
+                            f"OPEN TRADE\n"
+                            f"{t['direction']} @ ${t['entry']:.2f}\n"
+                            f"SL: ${t['sl']:.2f} | TP: ${t['tp']:.2f}\n"
+                            f"Size: {t['lots']} lots | Risk: ${t['risk']:.2f}\n"
+                            f"Current price: ${state.price:.2f}"
+                        )
+                    else:
+                        reply = "No open trade. Waiting for next signal."
+                    await send_telegram(reply)
+
+                elif text in ["/help", "help", "commands"]:
+                    reply = (
+                        "VORTEX COMMANDS:\n"
+                        "/status - Account stats\n"
+                        "/config - Current settings\n"
+                        "/trade - Open trade info\n"
+                        "/help - This menu"
+                    )
+                    await send_telegram(reply)
+
+                elif text:
+                    await send_telegram(f"Unknown command. Type /help for options.")
+
+        except Exception as e:
             pass
 
 
@@ -324,10 +409,14 @@ async def scan_loop():
     """
     state.running = True
     print(f"Scan loop started. Checking every {SCAN_INTERVAL}s during session {SESSION_START}:00-{SESSION_END}:00 UTC")
-    print(f"Strategy: SL={SL_MULT}x ATR | TP={TP_RATIO}:1 | Max {MAX_PER_DAY}/day | Timeout {MAX_HOLD*5/60:.1f}h")
+    print(f"Strategy: SL={SL_MULT}x ATR | TP={TP_RATIO}:1 | Max {MAX_PER_DAY}/day | Timeout {MAX_HOLD*BAR_MINUTES/60:.1f}h")
+    print(f"Telegram: listening for commands (/status, /config, /trade, /help)")
 
     while state.running:
         try:
+            # Check for Telegram messages (respond to user commands)
+            await check_telegram_messages()
+
             now = datetime.now(timezone.utc)
             state.last_scan = now.strftime("%Y-%m-%d %H:%M UTC")
             day_key = str(now.date())

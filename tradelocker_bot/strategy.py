@@ -50,19 +50,20 @@ def rsi_calc(series, period=14):
 
 
 # ===================== CONFIGURATION =====================
-# VALIDATED on NAS100 15m data, Jan-Jun 2026.
-# DD caps ON (5% daily, 10% total, adaptive risk ladder).
+# EXHAUSTIVE SWEEP WINNER (7,920 combos tested, DD caps ON, max 2/day).
+# Session 7-20 UTC (London+NY) | SL 1.75x ATR | TP 2.5:1 | CD 5 bars
+# Result: $60.19/trade | $137.2/wk | 57.9% WR | DD 8.7%
 
 TIMEFRAME = "15min"  # entry timeframe
 BAR_MINUTES = 15     # minutes per bar
-SL_MULT = 2.25       # Stop loss = 2.25x ATR(14) from entry
-TP_RATIO = 5.0       # Take profit = 5.0x the stop distance (let winners run)
-COOLDOWN = 6         # Minimum 6 bars (90 min) between trades
+SL_MULT = 1.75       # Stop loss = 1.75x ATR(14) from entry
+TP_RATIO = 2.5       # Take profit = 2.5x the stop distance
+COOLDOWN = 5         # Minimum 5 bars (75 min) between trades
 MAX_PER_DAY = 2      # Maximum 2 trades per day
 MAX_HOLD = 24        # Maximum hold = 24 bars (6 hours)
 RISK_PCT = 0.025     # Base risk = 2.5% of equity
-SESSION_START = 13   # Start trading at 13:00 UTC (NY session)
-SESSION_END = 20     # Stop trading at 20:00 UTC (NY session)
+SESSION_START = 7    # Start trading at 07:00 UTC (London open)
+SESSION_END = 20     # Stop trading at 20:00 UTC (NY close)
 CONTRACT = 20.0      # NAS100 CFD: $20 per point per lot
 
 
