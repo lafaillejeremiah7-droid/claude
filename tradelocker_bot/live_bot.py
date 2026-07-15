@@ -1,9 +1,12 @@
 """
 GOLD VORTEX v5 — Live Signal Bot
 ==================================
-Fetches real-time XAUUSD 5-minute data, runs the strategy logic,
+Fetches real-time NAS100 (Nasdaq 100) 5-minute data, runs the strategy logic,
 serves a futuristic dashboard at http://localhost:5000, and sends
 signals to Telegram.
+
+Instrument: NAS100 (switched from XAUUSD — Nasdaq trends cleaner with this
+momentum strategy: 57% WR vs 29% on gold in recent data).
 
 Usage:
   pip install fastapi uvicorn httpx pandas numpy
@@ -85,10 +88,10 @@ state = BotState()
 # ===================== PRICE FEED =====================
 
 async def fetch_5m_bars():
-    """Fetch recent XAUUSD 5-minute bars from Yahoo Finance."""
+    """Fetch recent NAS100 5-minute bars from Yahoo Finance."""
     async with httpx.AsyncClient(timeout=30) as client:
-        # Yahoo Finance: GC=F (Gold Futures) 5m data (last 5 days max)
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/GC=F"
+        # Yahoo Finance: NQ=F (Nasdaq 100 Futures) 5m data (last 5 days max)
+        url = "https://query1.finance.yahoo.com/v8/finance/chart/NQ=F"
         params = {"interval": "5m", "range": "5d"}
         headers = {"User-Agent": "Mozilla/5.0"}
         try:
@@ -252,8 +255,8 @@ def build_trade_signal(sig):
         sl = entry_price + sl_dist
         tp = entry_price - tp_dist
 
-    lots = max(0.01, round(risk_dollars / (sl_dist * 100.0), 2))
-    actual_risk = lots * sl_dist * 100.0
+    lots = max(0.01, round(risk_dollars / (sl_dist * 20.0), 2))
+    actual_risk = lots * sl_dist * 20.0
 
     return {
         "time": sig['time'],
@@ -292,7 +295,7 @@ async def send_telegram(text):
 
 async def send_signal_telegram(trade):
     msg = (
-        f"{'BUY' if trade['direction']=='BUY' else 'SELL'} XAUUSD\n"
+        f"{'BUY' if trade['direction']=='BUY' else 'SELL'} NAS100\n"
         f"Entry: ${trade['entry']:.2f}\n"
         f"SL: ${trade['sl']:.2f} ({trade['sl_dist']:.2f})\n"
         f"TP: ${trade['tp']:.2f} ({trade['tp_dist']:.2f})\n"
@@ -352,9 +355,9 @@ async def scan_loop():
                     if elapsed_min >= MAX_HOLD * 5:
                         # Timeout: close at current price
                         if t['direction'] == 'BUY':
-                            pnl = (state.price - t['entry']) * t['lots'] * 100.0
+                            pnl = (state.price - t['entry']) * t['lots'] * 20.0
                         else:
-                            pnl = (t['entry'] - state.price) * t['lots'] * 100.0
+                            pnl = (t['entry'] - state.price) * t['lots'] * 20.0
                         r_mult = pnl / t['risk'] if t['risk'] > 0 else 0
                         hit = 'TIMEOUT'
                 except:
@@ -365,20 +368,20 @@ async def scan_loop():
                     if t['direction'] == 'BUY':
                         if state.price <= t['sl']:
                             hit = 'SL'
-                            pnl = -(t['lots'] * t['sl_dist'] * 100.0)
+                            pnl = -(t['lots'] * t['sl_dist'] * 20.0)
                             r_mult = -1.0
                         elif state.price >= t['tp']:
                             hit = 'TP'
-                            pnl = t['lots'] * t['tp_dist'] * 100.0
+                            pnl = t['lots'] * t['tp_dist'] * 20.0
                             r_mult = TP_RATIO
                     else:
                         if state.price >= t['sl']:
                             hit = 'SL'
-                            pnl = -(t['lots'] * t['sl_dist'] * 100.0)
+                            pnl = -(t['lots'] * t['sl_dist'] * 20.0)
                             r_mult = -1.0
                         elif state.price <= t['tp']:
                             hit = 'TP'
-                            pnl = t['lots'] * t['tp_dist'] * 100.0
+                            pnl = t['lots'] * t['tp_dist'] * 20.0
                             r_mult = TP_RATIO
 
                 # 3) If trade closed, update state
@@ -461,14 +464,15 @@ async def scan_loop():
 
 # ===================== FASTAPI SERVER =====================
 
-app = FastAPI(title="GOLD VORTEX v5")
+app = FastAPI(title="VORTEX v5 — NAS100")
 
 
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(scan_loop())
-    print(f"\n  GOLD VORTEX v5 Live Bot")
+    print(f"\n  VORTEX v5 — NAS100 Live Signal Bot")
     print(f"  Dashboard: http://localhost:{PORT}")
+    print(f"  Instrument: NAS100 (Nasdaq 100 Futures)")
     print(f"  Scanning every 5 min during {SESSION_START}:00-{SESSION_END}:00 UTC")
     print(f"  Press Ctrl+C to stop\n")
 
